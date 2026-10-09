@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+node_modules
+dist
+coverage
+docs
+AGENTS.md
+ARCHITECTURE.md
+README-ignored.md
+tests
+web
+*.log
