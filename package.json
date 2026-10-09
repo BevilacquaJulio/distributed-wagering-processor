@@ -1,0 +1,53 @@
+{
+  "name": "distributed-wagering-processor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "engines": { "bun": "1.4.2" },
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "build": "bun build src/main.ts --target=bun --packages=external --outdir=dist",
+    "start:built": "bun dist/main.js",
+    "dev:web": "bun node_modules/vite/bin/vite.js --config web/vite.config.ts",
+    "build:web": "bun node_modules/vite/bin/vite.js build --config web/vite.config.ts",
+    "typecheck:web": "bun node_modules/typescript/bin/tsc --noEmit -p web/tsconfig.json",
+    "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
+    "lint": "bun node_modules/@biomejs/biome/bin/biome check src tests scripts web/src",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun --env-file=.env.test test tests/integration --timeout 30000",
+    "db:provision": "bun scripts/provision.ts",
+    "db:status": "bun scripts/migrate.ts status",
+    "db:migrate": "bun scripts/migrate.ts up",
+    "db:down": "bun scripts/migrate.ts down"
+  },
+  "dependencies": {
+    "@mikro-orm/core": "6.6.0",
+    "@mikro-orm/migrations": "6.6.0",
+    "@mikro-orm/postgresql": "6.6.0",
+    "@nestjs/common": "11.2.5",
+    "@nestjs/core": "11.2.5",
+    "@nestjs/platform-express": "11.2.5",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "zod": "4.1.12",
+    "@hookform/resolvers": "5.2.2",
+    "@tanstack/react-query": "5.90.10",
+    "axios": "1.13.2",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "react-hook-form": "7.66.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.8",
+    "@types/bun": "1.4.2",
+    "typescript": "5.9.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "@vitejs/plugin-react": "5.1.1",
+    "@tailwindcss/vite": "4.1.17",
+    "tailwindcss": "4.1.17",
+    "vite": "7.2.2"
+  }
+}

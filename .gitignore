@@ -2,3 +2,13 @@
 /README-ignored.md
 /AGENTS.md
 /ARCHITECTURE.md
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+!.env.test.example
+*.log
+.DS_Store
+Thumbs.db
