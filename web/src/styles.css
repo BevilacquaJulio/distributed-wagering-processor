@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+@theme {
+  --color-forest: #174d3b;
+  --color-mist: #eff4f1;
+  --font-sans: "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+@layer base {
+  body { @apply m-0 bg-mist text-[#20382d] font-sans; }
+  h1 { font-family: "Trebuchet MS", sans-serif; @apply text-3xl sm:text-4xl tracking-tight font-bold; }
+  h2 { @apply text-xl font-semibold tracking-tight mb-5; }
+  h3 { @apply font-semibold mb-4; }
+  button { @apply rounded-md border border-[#c6d5cb] bg-white px-4 py-2.5 text-sm font-semibold cursor-pointer transition-colors hover:bg-[#e9f0eb] disabled:opacity-50 disabled:cursor-not-allowed; }
+  label { @apply block text-sm font-medium; }
+  input { @apply block w-full mt-1.5 rounded-md border border-[#b8cbbf] bg-white px-3 py-2.5 text-[#20382d] text-sm; }
+  input[aria-invalid="true"] { @apply border-[#a13732]; }
+  button:focus-visible, input:focus-visible, a:focus-visible { @apply outline-2 outline-offset-3 outline-[#387d65]; }
+  small { @apply block text-xs text-[#5a6f62] mt-1; }
+}
+
+@layer components {
+  .shell { @apply max-w-[1440px] mx-auto px-5 sm:px-10; }
+  .topbar { @apply flex flex-wrap items-center justify-between gap-4 py-6 border-b border-[#ccdbd1]; }
+  .brand { @apply flex gap-3 items-center text-lg font-bold tracking-[.16em] no-underline; }
+  .brand-mark { @apply grid place-items-center bg-forest text-white rounded-tl-xl rounded-br-xl w-10 h-11 text-3xl italic; }
+  .brand-sub { @apply block text-[9px] font-medium tracking-[.12em] mt-0.5; }
+  .health { @apply border-0 bg-[#ddece3] text-forest text-xs; }
+  .health.offline { @apply bg-[#f9e8e5] text-[#893630]; }
+  .page-heading { @apply flex flex-wrap gap-5 items-center justify-between py-9; }
+  .page-heading h1 { @apply my-2; }
+  .page-heading p:last-child { @apply text-[#5a6f62] text-sm; }
+  .eyebrow { @apply text-[11px] uppercase font-bold tracking-[.13em] text-[#5a6f62]; }
+  .environment { @apply text-xs border border-[#bdcfc3] rounded-full px-3 py-1; }
+  .workspace { @apply grid items-start gap-6 lg:grid-cols-[290px_minmax(0,1fr)]; }
+  .panel { @apply bg-white rounded-xl border border-[#d9e3dc] p-6 sm:p-7; }
+  .wallet-tools > h2 { @apply mt-2; }
+  .primary { @apply bg-forest text-white border-forest hover:bg-[#236049]; }
+  .link-button { @apply border-0 bg-transparent p-0 text-forest underline underline-offset-4 text-xs hover:bg-transparent; }
+  .hint { @apply text-xs text-[#718478] ml-1; }
+  .divider { @apply border-t border-[#e1e9e3] my-7; }
+  .error { @apply text-sm text-[#963d36] break-words; }
+  .empty-wallet { @apply flex flex-col justify-center min-h-80; }
+  .empty-wallet p { @apply max-w-md text-[#5a6f62]; }
+  .empty-symbol { @apply text-5xl text-[#6f9580] mb-5; }
+  .balance-panel { @apply bg-forest text-white rounded-xl p-7 flex flex-wrap justify-between gap-6; }
+  .balance-panel .eyebrow { @apply text-[#bcd1c5]; }
+  .current-balance { @apply font-mono text-3xl sm:text-4xl tracking-tight mt-2 break-all; }
+  .current-balance span { @apply text-base ml-3 text-[#bcd1c5]; }
+  .wallet-meta { @apply text-xs flex flex-col items-start gap-2; }
+  .wallet-meta button { @apply bg-transparent text-white border-[#5f8673] py-1.5 hover:bg-[#28634d]; }
+  .section-heading { @apply flex justify-between gap-4 items-start mb-1; }
+  .section-heading h2 { @apply mt-1; }
+  .tag { @apply bg-[#edf3ee] text-forest rounded px-2.5 py-1 text-xs font-mono; }
+  .replay-strip { @apply flex flex-wrap items-center justify-between gap-3 mt-6 border-t border-[#e1e9e3] pt-5 text-sm; }
+  .replay-strip p { @apply text-xs text-[#5a6f62] mt-1; }
+  .result { @apply border-l-[3px] border-[#468467] bg-[#edf5ef] p-4 mt-5 text-sm space-y-1; }
+  .result.rejected { @apply border-[#b26b45] bg-[#fbf0e8]; }
+  .money { @apply font-mono tabular-nums whitespace-nowrap; }
+  .mono { @apply font-mono text-xs; }
+  .table-scroll { @apply overflow-x-auto; }
+  table { @apply w-full text-sm text-left border-collapse; }
+  th { @apply text-[10px] uppercase tracking-wider text-[#617768] font-semibold py-3 pr-5 border-b border-[#ccdbd1] whitespace-nowrap; }
+  td { @apply py-4 pr-5 border-b border-[#e4ece6]; }
+  .transaction-id { @apply min-w-36 max-w-44 break-all; }
+  .direction { @apply text-xs font-semibold; }
+  .direction.credit { @apply text-[#28674a]; }
+  .direction.debit { @apply text-[#8b5836]; }
+  footer { @apply py-9 mt-6 text-xs text-[#617768] flex flex-wrap justify-between gap-2; }
+}
+
+/* biome-ignore lint/complexity/noImportantStyles: a preferência de movimento reduzido precisa prevalecer sobre qualquer transição */
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
