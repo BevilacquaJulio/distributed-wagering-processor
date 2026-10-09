@@ -140,6 +140,18 @@ Money: `{ "amount": "25.00", "currency": "BRL" }`, duas casas obrigatórias, sem
 
 HTTP: 201 criação, 200 processamento/consulta, 400 formato/header, 404 recurso inexistente, 409 colisão, 422 rejeição financeira e 503 indisponibilidade transitória reconhecida. A rejeição financeira inclui ID, status, failureCode e saldo observado. Erros de transporte usam `{ error: { code, message, requestId } }`, sem SQL, stack ou secrets. Kinds ainda não implementados, inclusive OPENING externo, são recusados pelo contrato desta etapa.
 
+## CI
+
+O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualização de PR para `teste` ou `main`, e também por **Actions → CI → Run workflow**.
+
+| Job | O que executa |
+| --- | --- |
+| **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit`, `build`, `build:web`. |
+| **Imagem Docker e Compose** | Valida o `compose.yml` e constrói a imagem da API. |
+| **Integração com PostgreSQL real** | Sobe o `postgres-test` do Compose com credenciais geradas na execução, provisiona, aplica a migration, roda `test:integration`, reverte e reaplica a migration. Publica o log como artefato. |
+
+Migrations só são aplicadas no PostgreSQL descartável criado pelo job; nenhum banco persistente é acessado. Não há deploy.
+
 ## Operação e atualização
 
 - Dependências: atualizar manifesto somente com escopo definido, instalar/revisar `bun.lock` e reconstruir a imagem da API.

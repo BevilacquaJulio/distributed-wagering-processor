@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [teste, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualidade:
+    name: Lint, tipos, unidade e build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run typecheck:web
+      - run: bun run lint
+      - run: bun run test:unit
+      - run: bun run build
+      - run: bun run build:web
+
+  docker:
+    name: Imagem Docker e Compose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Valores fictícios: só a interpolação do Compose é validada, nenhum serviço é iniciado.
+      - run: docker compose -f compose.yml --profile test config --quiet
+        env:
+          POSTGRES_PASSWORD: ci-config-only
+          DATABASE_URL_CONTAINER: postgresql://jungle_runtime:ci-config-only@postgres:5432/jungle
+      - run: docker build --pull -t jungle-wagering-api:ci .
+
+  integracao:
+    name: Integração com PostgreSQL real
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Única etapa autorizada a aplicar migrations, sempre no PostgreSQL descartável criado por este job.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+
+      - name: Gerar credenciais efêmeras
+        run: |
+          admin="$(openssl rand -hex 24)"
+          runtime="$(openssl rand -hex 24)"
+          echo "::add-mask::$admin"
+          echo "::add-mask::$runtime"
+          cat > .env <<EOF
+          POSTGRES_PASSWORD=$admin
+          DATABASE_URL_CONTAINER=postgresql://jungle_runtime:$runtime@postgres:5432/jungle
+          EOF
+          cat > .env.test <<EOF
+          DATABASE_ADMIN_URL=postgresql://jungle_admin:$admin@127.0.0.1:55433/jungle_test
+          DATABASE_URL=postgresql://jungle_runtime:$runtime@127.0.0.1:55433/jungle_test
+          DATABASE_RUNTIME_PASSWORD=$runtime
+          TEST_DATABASE_DISPOSABLE=yes
+          EOF
+
+      - name: Subir PostgreSQL descartável
+        run: docker compose -f compose.yml --profile test up -d --wait postgres-test
+
+      - run: bun --env-file=.env.test run db:provision
+      - run: bun --env-file=.env.test run db:migrate
+      - run: bun --env-file=.env.test run db:status
+
+      - name: Testes de integração
+        run: bun run test:integration 2>&1 | tee integracao.log
+
+      - name: Reversão e reaplicação da migration
+        env:
+          ALLOW_DISPOSABLE_DOWN: 'yes'
+        run: |
+          bun --env-file=.env.test run db:down
+          bun --env-file=.env.test run db:status
+          bun --env-file=.env.test run db:migrate
+          bun --env-file=.env.test run db:status
+
+      - name: Logs do PostgreSQL
+        if: failure()
+        run: docker compose -f compose.yml --profile test logs --tail=200 postgres-test
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: integracao-${{ github.sha }}
+          path: integracao.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Encerrar PostgreSQL
+        if: always()
+        run: docker compose -f compose.yml --profile test down
