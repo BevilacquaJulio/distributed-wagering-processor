@@ -13,16 +13,21 @@ export class JsonLogger implements LoggerService {
   warn(_message: unknown): void { logEvent('framework_warning'); }
 }
 
-export class Metrics {
-  private readonly counters = new Map<string, number>();
+const METRIC_NAMES = ['processed', 'rejected', 'pending_reference', 'replay', 'conflict', 'reconciliation_divergence',
+  'infrastructure_failure', 'message_processed', 'message_duplicate', 'message_retry', 'message_dead_letter'] as const;
+export type MetricName = typeof METRIC_NAMES[number];
 
-  increment(name: 'processed' | 'rejected' | 'pending_reference' | 'replay' | 'conflict' | 'reconciliation_divergence' | 'infrastructure_failure'): void {
-    this.counters.set(name, (this.counters.get(name) ?? 0) + 1);
+export class Metrics {
+  private readonly counters = new Map<MetricName, number>();
+
+  increment(name: MetricName): void {
+    this.counters.set(name, this.value(name) + 1);
   }
+
+  value(name: MetricName): number { return this.counters.get(name) ?? 0; }
 
   render(): string {
     return '# HELP wagering_results_total Observed results in this process.\n# TYPE wagering_results_total counter\n'
-      + ['processed', 'rejected', 'pending_reference', 'replay', 'conflict', 'reconciliation_divergence', 'infrastructure_failure']
-        .map((name) => `wagering_results_total{result="${name}"} ${this.counters.get(name) ?? 0}\n`).join('');
+      + METRIC_NAMES.map((name) => `wagering_results_total{result="${name}"} ${this.value(name)}\n`).join('');
   }
 }

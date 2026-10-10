@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import { createApplication } from '../../src/bootstrap';
-import { readConfig } from '../../src/config';
+import { readConfig, readMessagingConfig } from '../../src/config';
 import type { SubmittedKind, WagerCommand } from '../../src/domain/wager-transaction';
 import type { WalletState } from '../../src/domain/wallet';
 import { connectDisposableDatabase } from './database';
@@ -17,7 +17,7 @@ export interface TestApi {
 export async function startTestApi(): Promise<TestApi> {
   const config = readConfig();
   const orm = await connectDisposableDatabase(config.DATABASE_URL);
-  const app = await createApplication(config);
+  const app = await createApplication(config, readMessagingConfig());
   await app.listen(0, '127.0.0.1');
   const base = await app.getUrl();
   return { orm, base, close: async () => { await app.close(); await orm.close(true); } };

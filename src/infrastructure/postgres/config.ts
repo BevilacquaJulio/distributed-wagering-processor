@@ -3,11 +3,12 @@ import { defineConfig } from '@mikro-orm/postgresql';
 import { entities } from './entities';
 import { Migration202610090001 } from './migrations/Migration202610090001';
 import { Migration202610090002 } from './migrations/Migration202610090002';
+import { Migration202610100001 } from './migrations/Migration202610100001';
 
 export const DATABASE_POOL_MAX = 10;
 /** Versão gravada em schema_version pela última migration; readiness e testes recusam schema diferente. */
-export const SCHEMA_VERSION = 2;
-export const MIGRATIONS = [Migration202610090001, Migration202610090002];
+export const SCHEMA_VERSION = 3;
+export const MIGRATIONS = [Migration202610090001, Migration202610090002, Migration202610100001];
 
 export function databaseConfig(clientUrl: string) {
   return defineConfig({
