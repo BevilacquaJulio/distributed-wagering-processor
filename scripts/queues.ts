@@ -23,11 +23,12 @@ try {
       RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: MAX_RECEIVE_COUNT }),
     } }));
   }
-  for (const name of [messaging.SQS_COMMAND_QUEUE, messaging.SQS_DEAD_LETTER_QUEUE]) {
+  const statuses = await Promise.all([messaging.SQS_COMMAND_QUEUE, messaging.SQS_DEAD_LETTER_QUEUE].map(async (name) => {
     const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: await queueUrl(sqs, name),
       AttributeNames: ['FifoQueue', 'VisibilityTimeout', 'RedrivePolicy', 'ApproximateNumberOfMessages'] }));
-    process.stdout.write(`${JSON.stringify({ queue: name, ...Attributes })}\n`);
-  }
+    return { queue: name, ...Attributes };
+  }));
+  for (const status of statuses) process.stdout.write(`${JSON.stringify(status)}\n`);
 } catch {
   process.stderr.write('Operação de filas não concluída. Confira endpoint, região, credenciais e nomes das filas.\n');
   process.exitCode = 1;

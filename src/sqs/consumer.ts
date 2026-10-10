@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import { ChangeMessageVisibilityCommand, DeleteMessageCommand, type Message, ReceiveMessageCommand, SendMessageCommand,
   type SQSClient } from '@aws-sdk/client-sqs';
 import { ZodError } from 'zod';
@@ -104,6 +105,7 @@ export class SqsConsumer {
           await this.release(messages.slice(index));
           break;
         }
+        // Sequencial de propósito: em FIFO, mensagens do mesmo grupo (wallet) precisam ser processadas em ordem.
         await this.handle(message);
       }
     }
@@ -133,7 +135,7 @@ export class SqsConsumer {
   private async retry(message: Message, messageId: string): Promise<Outcome> {
     const attempt = this.receiveCount(message);
     const backoff = Math.min(this.settings.retryMaxSeconds, this.settings.retryBaseSeconds * 2 ** (attempt - 1));
-    const visibility = backoff + Math.floor(Math.random() * this.settings.retryBaseSeconds);
+    const visibility = backoff + randomInt(0, this.settings.retryBaseSeconds);
     this.metrics.increment('message_retry');
     logEvent('message_retry_scheduled', { messageId, receiveCount: attempt, visibilitySeconds: visibility });
     try {
