@@ -38,7 +38,7 @@ export type ReferenceDecision =
   | { readonly outcome: 'pending' }
   | { readonly outcome: 'reject'; readonly code: FailureCode };
 
-const TERMINAL: readonly TransactionStatus[] = ['PROCESSED', 'REJECTED', 'FAILED'];
+const TERMINAL: ReadonlySet<TransactionStatus> = new Set(['PROCESSED', 'REJECTED', 'FAILED']);
 const REFERENCEABLE: Record<SubmittedKind, readonly TransactionKind[]> = {
   BET: [], LOSS: [], WIN: ['BET'], REFUND: ['BET'], ROLLBACK: ['BET', 'WIN', 'REFUND'],
 };
@@ -82,7 +82,7 @@ export class WagerTransaction {
   get status(): TransactionStatus { return this.state.status; }
   get money(): Money { return Money.from(this.state.money); }
 
-  isTerminal(): boolean { return TERMINAL.includes(this.state.status); }
+  isTerminal(): boolean { return TERMINAL.has(this.state.status); }
   isReversal(): boolean { return this.state.kind === 'REFUND' || this.state.kind === 'ROLLBACK'; }
   affectsBalance(): boolean { return this.state.kind !== 'LOSS'; }
 
@@ -116,7 +116,7 @@ export class WagerTransaction {
       return { outcome: 'apply', direction: this.ledgerDirectionFor(), referenceTransactionId: null };
     }
     if (command.referenceExternalTransactionId === command.externalTransactionId) return { outcome: 'reject', code: 'INVALID_REFERENCE' };
-    if (!reference || !reference.isTerminal()) return { outcome: 'pending' };
+    if (!reference?.isTerminal()) return { outcome: 'pending' };
     if (reference.status !== 'PROCESSED') return { outcome: 'reject', code: 'REFERENCE_NOT_PROCESSED' };
     const target = reference.state;
     if (!REFERENCEABLE[command.kind].includes(target.kind) || target.playerId !== this.state.playerId

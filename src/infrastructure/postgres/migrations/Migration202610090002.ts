@@ -27,7 +27,7 @@ const GUARD_V1 = `
   end; $$;`;
 
 export class Migration202610090002 extends Migration {
-  override async up(): Promise<void> {
+  override up(): void {
     this.addSql(`
       update schema_version set version = 2;
 
@@ -159,7 +159,7 @@ export class Migration202610090002 extends Migration {
 
   // Downgrade descarta vínculos de referência, aceites pendentes e agenda de reprocessamento.
   // As constraints anteriores voltam como NOT VALID para não falhar com linhas já gravadas pelos novos kinds.
-  override async down(): Promise<void> {
+  override down(): void {
     this.addSql(`
       drop table pending_references, transaction_acceptances, wager_references;
       drop function validate_reference_link(), validate_pending_snapshot();

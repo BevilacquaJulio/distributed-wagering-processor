@@ -8,7 +8,7 @@ function find(search: Search): Promise<TransactionView> {
   return search.mode === 'internal' ? getTransaction(search.id) : getTransactionByExternal(search.providerId, search.externalTransactionId);
 }
 
-function Details({ transaction }: { transaction: TransactionView }) {
+function Details({ transaction }: Readonly<{ transaction: TransactionView }>) {
   const rows: [string, string][] = [
     ['Tipo', transaction.kind], ['Status atual', transaction.status], ['Valor', `${transaction.money.amount} ${transaction.money.currency}`],
     ['ID externo', transaction.command?.externalTransactionId ?? 'abertura interna'],

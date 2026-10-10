@@ -30,7 +30,7 @@ function newOperation(kind: Kind = 'BET', reference = ''): OperationInput {
     roundId: 'round-1', gameId: 'game-1', amount: kind === 'LOSS' ? '0.00' : '25.00', reference };
 }
 
-function ResultCard({ result }: { result: WagerResult }) {
+function ResultCard({ result }: Readonly<{ result: WagerResult }>) {
   return <div className={`result ${result.status === 'REJECTED' ? 'rejected' : ''}`} aria-live="polite">
     <strong>{statusTitles[result.status]}</strong>
     <p>{result.idempotentReplay ? 'Replay: resultado persistido, sem nova movimentação.' : 'Resposta recebida do processador.'}</p>
@@ -41,7 +41,7 @@ function ResultCard({ result }: { result: WagerResult }) {
   </div>;
 }
 
-export function OperationForm({ wallet }: { wallet: Wallet }) {
+export function OperationForm({ wallet }: Readonly<{ wallet: Wallet }>) {
   const queryClient = useQueryClient();
   const [last, setLast] = useState<Submission | null>(null);
   const form = useForm<OperationInput>({ resolver: zodResolver(operationInputSchema), defaultValues: newOperation() });
