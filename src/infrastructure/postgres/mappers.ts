@@ -12,10 +12,12 @@ export function walletToRow(wallet: Wallet): WalletRow {
   return { id: state.id, playerId: state.playerId, balance: state.balance.amount, currency: state.balance.currency,
     version: state.version, createdAt: new Date(state.createdAt), updatedAt: new Date(state.updatedAt) };
 }
-export function transactionFromRow(row: TransactionRow): WagerTransaction {
+// O vínculo com a referência fica em wager_references; quem lê a linha informa o valor quando o conhece.
+export function transactionFromRow(row: TransactionRow, referenceTransactionId: string | null = null): WagerTransaction {
   return WagerTransaction.rehydrate({ id: row.id, walletId: row.walletId, playerId: row.playerId, kind: row.kind,
     money: { amount: row.amount, currency: row.currency }, status: row.status, failureCode: row.failureCode,
-    command: row.command, createdAt: row.createdAt.toISOString(), processedAt: row.processedAt?.toISOString() ?? null });
+    command: row.command, createdAt: row.createdAt.toISOString(), processedAt: row.processedAt?.toISOString() ?? null,
+    referenceTransactionId });
 }
 export function transactionToRow(transaction: WagerTransaction): TransactionRow {
   const state = transaction.toState();

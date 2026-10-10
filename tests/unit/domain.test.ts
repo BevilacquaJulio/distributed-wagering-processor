@@ -3,7 +3,7 @@ import { Wallet } from '../../src/domain/wallet';
 import { Money } from '../../src/domain/money';
 import { WagerTransaction } from '../../src/domain/wager-transaction';
 import { Sha256PayloadHasher } from '../../src/infrastructure/identity';
-import { betSchema, ledgerQuerySchema } from '../../src/contracts/requests';
+import { ledgerQuerySchema, wagerSchema } from '../../src/contracts/requests';
 
 const at = '2026-10-09T12:00:00.000Z';
 const money = (amount: string) => Money.from({ amount, currency: 'BRL' });
@@ -37,6 +37,14 @@ test('reidratação conserva versão e não permite reabrir terminal', () => {
   expect(restored.toState().status).toBe('PROCESSED');
 });
 
+test('hash canônico é estável: ordem por unidade UTF-16, sem depender de locale', () => {
+  // Valor fixado antes da troca do comparador; mudar a ordem invalidaria as identidades já persistidas.
+  const command = { providerId: 'provider-a', externalTransactionId: 'transaction-123', playerId: '0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1',
+    walletId: '0192f291-27dd-7d3f-8071-5f8685deef37', roundId: 'round-987', gameId: 'fortune-chimp', kind: 'REFUND',
+    money: { amount: '25.00', currency: 'BRL' }, referenceExternalTransactionId: 'transaction-122', Zeta: 1, alpha: 2 };
+  expect(new Sha256PayloadHasher().hash(command)).toBe('82b3e10966d4be134fb6491b837d86db36cb34a86a72798d920dbf1714b4e7fd');
+});
+
 test('hash é independente da ordem de chaves e diferencia campos de negócio', () => {
   const hasher = new Sha256PayloadHasher();
   expect(hasher.hash({ b: { y: 2, x: 1 }, a: '1.00' })).toBe(hasher.hash({ a: '1.00', b: { x: 1, y: 2 } }));
@@ -44,7 +52,7 @@ test('hash é independente da ordem de chaves e diferencia campos de negócio', 
 });
 
 test('contrato rejeita OPENING e limita paginação', () => {
-  expect(betSchema.safeParse({ kind: 'OPENING' }).success).toBe(false);
+  expect(wagerSchema.safeParse({ kind: 'OPENING' }).success).toBe(false);
   expect(ledgerQuerySchema.parse({}).limit).toBe(50);
   expect(ledgerQuerySchema.safeParse({ limit: '101' }).success).toBe(false);
   expect(ledgerQuerySchema.safeParse({ limit: '0' }).success).toBe(false);

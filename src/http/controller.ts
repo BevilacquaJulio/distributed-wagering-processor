@@ -2,11 +2,15 @@ import { Body, Controller, Get, Headers, HttpCode, Inject, Param, Post, Query, R
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { FinancialQueries } from '../application/ports';
 import { WageringService } from '../application/wagering-service';
-import { betSchema, cursorSchema, identifier, ledgerQuerySchema, openWalletSchema, uuid } from '../contracts/requests';
+import { cursorSchema, identifier, ledgerQuerySchema, openWalletSchema, uuid, wagerSchema } from '../contracts/requests';
 import { logEvent, Metrics, requestContext } from '../infrastructure/observability';
+import { SCHEMA_VERSION } from '../infrastructure/postgres/config';
 import { InvalidRequest } from './error-filter';
 
 export const ORM = Symbol('ORM');
+// 202 é aceite com processamento pendente, não sucesso financeiro final.
+const RESULT_STATUS = { PROCESSED: 200, PENDING_REFERENCE: 202, REJECTED: 422 } as const;
+const RESULT_METRIC = { PROCESSED: 'processed', PENDING_REFERENCE: 'pending_reference', REJECTED: 'rejected' } as const;
 export const QUERIES = Symbol('QUERIES');
 interface HttpResponse { status(code: number): HttpResponse; json(body: unknown): void; type(value: string): HttpResponse; send(body: string): void; }
 
@@ -30,17 +34,17 @@ export class FinancialController {
   wallet(@Param('walletId') id: string) { return this.queries.wallet(uuid.parse(id)); }
 
   @Post('wagering/transactions')
-  async bet(@Body() input: unknown, @Headers('idempotency-key') header: unknown, @Res() response: HttpResponse) {
+  async submit(@Body() input: unknown, @Headers('idempotency-key') header: unknown, @Res() response: HttpResponse) {
     if (header === undefined || header === '') throw new InvalidRequest('MISSING_IDEMPOTENCY_KEY');
     const key = identifier.parse(header);
-    const command = betSchema.parse(input);
+    const command = wagerSchema.parse(input);
     const started = performance.now();
-    const result = await this.wagering.bet(command, key, this.correlationId());
-    this.metrics.increment(result.idempotentReplay ? 'replay' : result.status === 'PROCESSED' ? 'processed' : 'rejected');
-    logEvent('wager_result', { walletId: command.walletId, providerId: command.providerId,
+    const result = await this.wagering.submit(command, key, this.correlationId());
+    this.metrics.increment(result.idempotentReplay ? 'replay' : RESULT_METRIC[result.status]);
+    logEvent('wager_result', { walletId: command.walletId, providerId: command.providerId, kind: command.kind,
       transactionId: result.transactionId, status: result.status, replay: result.idempotentReplay,
       durationMs: Math.round(performance.now() - started), failureCode: result.failureCode ?? null });
-    response.status(result.status === 'PROCESSED' ? 200 : 422).json(result);
+    response.status(RESULT_STATUS[result.status]).json(result);
   }
 
   @Get('wagering/transactions/:transactionId')
@@ -93,7 +97,7 @@ export class HealthController {
   @Get('health/ready')
   async ready() {
     try {
-      const rows = await this.orm.em.fork().execute<{ version: number }[]>('select version from schema_version where version = 1');
+      const rows = await this.orm.em.fork().execute<{ version: number }[]>('select version from schema_version where version = ?', [SCHEMA_VERSION]);
       if (!rows[0]) throw new Error('Schema unavailable');
     } catch { throw new ServiceUnavailableException(); }
     return { status: 'up', scope: 'http-bet', dependencies: { postgres: 'up', sqs: 'not-implemented' } };

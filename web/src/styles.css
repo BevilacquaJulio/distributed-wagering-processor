@@ -14,9 +14,10 @@
   h3 { @apply font-semibold mb-4; }
   button { @apply rounded-md border border-[#c6d5cb] bg-white px-4 py-2.5 text-sm font-semibold cursor-pointer transition-colors hover:bg-[#e9f0eb] disabled:opacity-50 disabled:cursor-not-allowed; }
   label { @apply block text-sm font-medium; }
-  input { @apply block w-full mt-1.5 rounded-md border border-[#b8cbbf] bg-white px-3 py-2.5 text-[#20382d] text-sm; }
+  input:not([type="radio"]), select { @apply block w-full mt-1.5 rounded-md border border-[#b8cbbf] bg-white px-3 py-2.5 text-[#20382d] text-sm; }
+  input[type="radio"] { @apply accent-[#387d65]; }
   input[aria-invalid="true"] { @apply border-[#a13732]; }
-  button:focus-visible, input:focus-visible, a:focus-visible { @apply outline-2 outline-offset-3 outline-[#387d65]; }
+  button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { @apply outline-2 outline-offset-3 outline-[#387d65]; }
   small { @apply block text-xs text-[#5a6f62] mt-1; }
 }
 

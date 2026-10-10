@@ -1,10 +1,12 @@
 import { Money, type MoneyProps } from './money';
 
+export type LedgerDirection = 'DEBIT' | 'CREDIT';
+
 export interface LedgerState {
   readonly id: string;
   readonly walletId: string;
   readonly transactionId: string;
-  readonly direction: 'DEBIT' | 'CREDIT';
+  readonly direction: LedgerDirection;
   readonly money: MoneyProps;
   readonly balanceBefore: MoneyProps;
   readonly balanceAfter: MoneyProps;

@@ -3,10 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { TransactionResult } from '../../src/application/ports';
 import { readConfig } from '../../src/config';
-import type { BetCommand } from '../../src/domain/wager-transaction';
+import type { WagerCommand } from '../../src/domain/wager-transaction';
 import type { WalletState } from '../../src/domain/wallet';
 import { DATABASE_POOL_MAX } from '../../src/infrastructure/postgres/config';
 import { PostgresQueries } from '../../src/infrastructure/postgres/queries';
+import { financialState as stateOf } from '../support/api';
 import { connectDisposableDatabase } from '../support/database';
 import { type Barrier, type Instance, holdWalletIdentity, lockWallet, startInstances, stopInstances, waitForLockWaiters } from './harness';
 
@@ -52,12 +53,12 @@ async function openWallet(amount: string, playerId = randomUUID()): Promise<Wall
   return reply.body;
 }
 
-function bet(wallet: WalletState, amount: string): BetCommand {
+function bet(wallet: WalletState, amount: string): WagerCommand {
   return { providerId: 'provider-a', externalTransactionId: randomUUID(), playerId: wallet.playerId,
     walletId: wallet.id, roundId: 'round-1', gameId: 'game-1', kind: 'BET', money: { amount, currency: 'BRL' } };
 }
 
-function submit(index: number, command: BetCommand, key: string): Promise<Reply<TransactionResult>> {
+function submit(index: number, command: WagerCommand, key: string): Promise<Reply<TransactionResult>> {
   return post<TransactionResult>(index, '/wagering/transactions', command, key);
 }
 
@@ -74,17 +75,7 @@ async function contend<T>(barrier: Barrier, expectedWaiters: number, requests: (
   return { waiting, results: await Promise.all(pending) };
 }
 
-async function financialState(walletId: string) {
-  const em = orm.em.fork();
-  const group = async (sql: string) => Object.fromEntries(
-    (await em.execute<{ key: string; count: number }[]>(sql, [walletId])).map((row) => [row.key, row.count]));
-  return {
-    ledger: await group('select direction as key, count(*)::int as count from wallet_ledger where wallet_id = ? group by direction'),
-    transactions: await group(`select kind || ':' || status as key, count(*)::int as count
-      from wager_transactions where wallet_id = ? group by kind, status`),
-    events: await group('select event_type as key, count(*)::int as count from outbox_messages where aggregate_id = ? group by event_type'),
-  };
-}
+const financialState = (walletId: string) => stateOf(orm, walletId);
 
 async function expectConsistent(walletId: string, balance: string, version: number, entries: number): Promise<void> {
   const queries = new PostgresQueries(orm);
@@ -190,6 +181,31 @@ describe(`concorrência entre ${INSTANCES} processos da API`, () => {
     expect(released?.body.balance.amount).toBe('75.00');
     await expectConsistent(blocked.id, '75.00', 2, 2);
     await expectConsistent(free.id, '75.00', 2, 2);
+  });
+
+  test('dois REFUNDs simultâneos da mesma BET: um credita, outro é rejeitado como já revertido', async () => {
+    const wallet = await openWallet('100.00');
+    const original = bet(wallet, '25.00');
+    expect((await submit(0, original, randomUUID())).status).toBe(200);
+    const refunds = [0, 1].map(() => ({ ...bet(wallet, '25.00'), kind: 'REFUND' as const,
+      referenceExternalTransactionId: original.externalTransactionId }));
+
+    const { waiting, results } = await contend(await lockWallet(orm, wallet.id), 2,
+      () => refunds.map((command, index) => submit(index + 1, command, randomUUID())));
+
+    expect(waiting).toBe(2);
+    const processed = results.filter((reply) => reply.status === 200);
+    const rejected = results.filter((reply) => reply.status === 422);
+    expect(processed).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(processed[0]?.body).toMatchObject({ status: 'PROCESSED', balance: { amount: '100.00' } });
+    expect(rejected[0]?.body).toMatchObject({ failureCode: 'REFERENCE_ALREADY_REVERSED', balance: { amount: '100.00' } });
+    expect(await financialState(wallet.id)).toEqual({
+      ledger: { CREDIT: 2, DEBIT: 1 },
+      transactions: { 'OPENING:PROCESSED': 1, 'BET:PROCESSED': 1, 'REFUND:PROCESSED': 1, 'REFUND:REJECTED': 1 },
+      events: { WagerTransactionProcessed: 3, WalletBalanceChanged: 3, WagerTransactionRejected: 1 },
+    });
+    await expectConsistent(wallet.id, '100.00', 3, 3);
   });
 
   test('criações simultâneas da mesma wallet resultam em uma única wallet', async () => {

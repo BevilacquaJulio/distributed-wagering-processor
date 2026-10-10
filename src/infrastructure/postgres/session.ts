@@ -4,10 +4,10 @@ import { ApplicationError } from '../../application/errors';
 import type { FinancialSession, Identity, TransactionResult } from '../../application/ports';
 import type { EventEnvelope } from '../../domain/events';
 import type { LedgerEntry } from '../../domain/ledger-entry';
-import type { WagerTransaction } from '../../domain/wager-transaction';
+import type { SubmittedKind, WagerTransaction } from '../../domain/wager-transaction';
 import type { Wallet } from '../../domain/wallet';
 import { LedgerSchema, OutboxSchema, ResultSchema, TransactionSchema, WalletSchema } from './entities';
-import { ledgerToRow, transactionToRow, walletFromRow, walletToRow } from './mappers';
+import { ledgerToRow, transactionFromRow, transactionToRow, walletFromRow, walletToRow } from './mappers';
 
 export class PostgresFinancialSession implements FinancialSession {
   constructor(private readonly em: EntityManager) {}
@@ -29,10 +29,15 @@ export class PostgresFinancialSession implements FinancialSession {
     return existing;
   }
 
+  // Replay devolve o resultado terminal quando existir; enquanto pendente, o aceite persistido.
   async result(transactionId: string): Promise<TransactionResult> {
     const row = await this.em.findOne(ResultSchema, { transactionId });
-    if (!row) throw new Error('Committed identity has no terminal snapshot');
-    return structuredClone(row.body);
+    if (row) return structuredClone(row.body);
+    const accepted = await this.em.execute<{ body: TransactionResult }[]>(
+      'select body from transaction_acceptances where transaction_id = ?', [transactionId]);
+    const acceptance = accepted[0];
+    if (!acceptance) throw new Error('Committed identity has no persisted result');
+    return structuredClone(acceptance.body);
   }
 
   async walletForUpdate(walletId: string): Promise<Wallet> {
@@ -68,6 +73,37 @@ export class PostgresFinancialSession implements FinancialSession {
   async saveResult(body: TransactionResult): Promise<void> {
     this.em.persist(this.em.create(ResultSchema, { transactionId: body.transactionId, body: structuredClone(body) }));
     await this.em.flush();
+  }
+
+  async saveAcceptance(body: TransactionResult): Promise<void> {
+    await this.em.execute('insert into transaction_acceptances (transaction_id, body) values (?, ?)',
+      [body.transactionId, JSON.stringify(body)]);
+  }
+
+  async findReference(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined> {
+    const rows = await this.em.execute<{ id: string }[]>(
+      'select transaction_id as id from wager_identities where provider_id = ? and external_transaction_id = ?',
+      [providerId, externalTransactionId]);
+    const id = rows[0]?.id;
+    if (!id) return undefined;
+    const row = await this.em.findOne(TransactionSchema, { id }, { refresh: true });
+    return row ? transactionFromRow(row) : undefined;
+  }
+
+  async hasProcessedReversal(referenceTransactionId: string, kind: SubmittedKind): Promise<boolean> {
+    const rows = await this.em.execute<{ found: number }[]>(
+      'select 1 as found from wager_references where reference_transaction_id = ? and kind = ?', [referenceTransactionId, kind]);
+    return rows.length > 0;
+  }
+
+  async linkReference(transactionId: string, referenceTransactionId: string, kind: SubmittedKind): Promise<void> {
+    await this.em.execute('insert into wager_references (transaction_id, reference_transaction_id, kind) values (?, ?, ?)',
+      [transactionId, referenceTransactionId, kind]);
+  }
+
+  async schedulePendingReference(transactionId: string, nextAttemptAt: string, deadlineAt: string): Promise<void> {
+    await this.em.execute('insert into pending_references (transaction_id, next_attempt_at, deadline_at) values (?, ?, ?)',
+      [transactionId, nextAttemptAt, deadlineAt]);
   }
 
   async enqueue(payload: EventEnvelope): Promise<void> {

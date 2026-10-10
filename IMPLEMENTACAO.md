@@ -40,9 +40,22 @@ SHA-256 de JSON com chaves ordenadas recursivamente, UTF-8, incluindo todos os c
 
 Resultados terminais ficam em tabela append-only, incluindo rejeições sem ledger. Movimentações posteriores não mudam o saldo dessa resposta. GET wallet retorna o saldo atual. Abertura positiva inclui OPENING/ledger e mantém version 1; débito posterior incrementa. Abertura zero e BET rejeitada não geram ledger.
 
+## Operações e referências
+
+`WagerTransaction` concentra a tabela de transições e a decisão sobre a referência; o serviço aplica uma única transição sob o lock da wallet. A referência é procurada por provedor e ID externo depois do lock, porque pertence à mesma wallet. Ausente ou ainda pendente, a operação fica `PENDING_REFERENCE`; rejeitada ou com falha, `REFERENCE_NOT_PROCESSED`; incompatível, `REFERENCE_MISMATCH`; com outro valor, `REFERENCE_AMOUNT_MISMATCH`. ROLLBACK aplica a direção inversa da efetivamente lançada pela referência.
+
+A migration `Migration202610090002` acrescenta:
+
+- `wager_references`: vínculo gravado só para operações processadas, com índice único parcial `(reference_transaction_id, kind)` para REFUND e ROLLBACK e trigger que confere tipo, wallet, jogador, moeda, rodada e valor. Sem a checagem do serviço, o segundo REFUND da mesma BET bate nesse índice e a unidade inteira é desfeita.
+- `transaction_acceptances`: aceite pendente imutável, separado do resultado terminal.
+- `pending_references`: agenda com tentativas, próxima tentativa (1s após o aceite) e prazo (24h), que o worker da próxima entrega consumirá.
+- Constraints de kind, status, LOSS com 0.00, coerência do `command` com wallet/jogador e presença da referência por tipo; o trigger do ledger passa a exigir a direção de cada kind, inclusive a inversa no ROLLBACK.
+
+O downgrade descarta vínculos, aceites e agenda e restaura as constraints anteriores como `NOT VALID`, para não falhar com linhas já gravadas pelos novos kinds.
+
 ## Eventos e diagnóstico
 
-Processed, Rejected e BalanceChanged são classes concretas, com envelope versionado e MoneyProps serializável. Eventos são persistidos no mesmo commit. Nenhum publisher/SQS está implementado; eventos permanecem pendentes. Persistência de outbox não equivale a entrega comprovada.
+Processed, Rejected, PendingReference e BalanceChanged são classes concretas, com envelope versionado e MoneyProps serializável. Eventos são persistidos no mesmo commit. Nenhum publisher/SQS está implementado; eventos permanecem pendentes. Persistência de outbox não equivale a entrega comprovada.
 
 Logs JSON contêm correlação e identidades do resultado, sem payload/valor financeiro, SQL ou credenciais. `/metrics` expõe contadores locais de resultados, replay, conflito, indisponibilidade e divergência. Contagem é observacional, não ledger auditável. Métricas de workers, retries, locks, lag e histogramas completos ainda serão implementadas.
 

@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Clock, IdGenerator, PayloadHasher, ProviderIdentityPort } from '../application/ports';
 
+// Ordem por unidade de código UTF-16, independente de locale: é a ordem dos hashes já persistidos.
+// localeCompare variaria entre ambientes e mudaria o hash de transações gravadas.
+function byCodeUnit(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
 function canonical(value: unknown): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
     return JSON.stringify(value);
@@ -8,7 +15,10 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (typeof value === 'object') {
     const object = value as Record<string, unknown>;
-    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(',')}}`;
+    // Campo ausente e campo undefined produzem o mesmo hash: a referência omitida não entra no payload.
+    const keys = Object.keys(object).filter((key) => object[key] !== undefined).sort(byCodeUnit);
+    const members = keys.map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`);
+    return `{${members.join(',')}}`;
   }
   throw new Error('Payload must be JSON serializable');
 }
