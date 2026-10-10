@@ -1,7 +1,7 @@
 import { LockMode } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import { ApplicationError } from '../../application/errors';
-import type { FinancialSession, Identity, InboxDelivery, InboxRecord, TransactionResult } from '../../application/ports';
+import type { FinancialSession, Identity, InboxDelivery, InboxRecord, PendingSchedule, TransactionResult } from '../../application/ports';
 import type { EventEnvelope } from '../../domain/events';
 import type { LedgerEntry } from '../../domain/ledger-entry';
 import type { SubmittedKind, WagerTransaction } from '../../domain/wager-transaction';
@@ -122,6 +122,48 @@ export class PostgresFinancialSession implements FinancialSession {
   async schedulePendingReference(transactionId: string, nextAttemptAt: string, deadlineAt: string): Promise<void> {
     await this.em.execute('insert into pending_references (transaction_id, next_attempt_at, deadline_at) values (?, ?, ?)',
       [transactionId, nextAttemptAt, deadlineAt]);
+  }
+
+  async lockPendingReference(transactionId: string, claimToken: string): Promise<PendingSchedule | null> {
+    const rows = await this.em.execute<{ attempts: number; deadlineAt: Date }[]>(`
+      select attempts, deadline_at as "deadlineAt" from pending_references
+      where transaction_id = ? and claim_token = ? and resolved_at is null for update`, [transactionId, claimToken]);
+    const row = rows[0];
+    return row ? { attempts: row.attempts, deadlineAt: new Date(row.deadlineAt).toISOString() } : null;
+  }
+
+  async pendingTransaction(transactionId: string): Promise<WagerTransaction> {
+    const row = await this.em.findOneOrFail(TransactionSchema, { id: transactionId }, { refresh: true });
+    return transactionFromRow(row);
+  }
+
+  async saveTransaction(transaction: WagerTransaction): Promise<void> {
+    const state = transaction.toState();
+    const rows = await this.em.execute<{ id: string }[]>(`
+      update wager_transactions set status = ?, failure_code = ?, processed_at = ?
+      where id = ? and status = 'PENDING_REFERENCE' returning id`, [state.status, state.failureCode, state.processedAt, state.id]);
+    if (rows.length !== 1) throw new Error('Pending transaction changed outside the wallet lock');
+  }
+
+  async reschedulePendingReference(transactionId: string, attempts: number, nextAttemptAt: string): Promise<void> {
+    await this.em.execute(`
+      update pending_references set attempts = ?, next_attempt_at = ?, claim_token = null, lease_until = null
+      where transaction_id = ?`, [attempts, nextAttemptAt, transactionId]);
+  }
+
+  async resolvePendingReference(transactionId: string, attempts: number, at: string): Promise<void> {
+    await this.em.execute(`
+      update pending_references set attempts = ?, resolved_at = ?, claim_token = null, lease_until = null
+      where transaction_id = ?`, [attempts, at, transactionId]);
+  }
+
+  async wakeDependents(providerId: string, externalTransactionId: string, at: string): Promise<void> {
+    await this.em.execute(`
+      update pending_references p set next_attempt_at = ?
+      from wager_transactions t
+      where t.id = p.transaction_id and t.status = 'PENDING_REFERENCE'
+        and (t.command->>'providerId') = ? and (t.command->>'referenceExternalTransactionId') = ?
+        and p.resolved_at is null and p.next_attempt_at > ?`, [at, providerId, externalTransactionId, at]);
   }
 
   async enqueue(payload: EventEnvelope): Promise<void> {

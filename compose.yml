@@ -84,6 +84,25 @@ services:
       - /tmp
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+  # Reavalia PENDING_REFERENCE; instâncias se coordenam pelo claim com lease na agenda. Não usa SQS.
+  reference-worker:
+    image: jungle-wagering-api:local
+    build: .
+    command: ["bun", "dist/reference-worker.js"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL_CONTAINER:?Defina DATABASE_URL_CONTAINER em .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   postgres-test:
     image: postgres:17.6-alpine
     profiles: [test]

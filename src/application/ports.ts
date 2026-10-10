@@ -52,6 +52,30 @@ export interface FinancialSession {
   hasProcessedReversal(referenceTransactionId: string, kind: SubmittedKind): Promise<boolean>;
   linkReference(transactionId: string, referenceTransactionId: string, kind: SubmittedKind): Promise<void>;
   schedulePendingReference(transactionId: string, nextAttemptAt: string, deadlineAt: string): Promise<void>;
+  /** Trava a agenda sob o lock da wallet; null quando o claim deixou de ser deste worker ou já foi resolvida. */
+  lockPendingReference(transactionId: string, claimToken: string): Promise<PendingSchedule | null>;
+  pendingTransaction(transactionId: string): Promise<WagerTransaction>;
+  /** Grava a transição de uma transação já persistida (PENDING_REFERENCE para terminal). */
+  saveTransaction(transaction: WagerTransaction): Promise<void>;
+  reschedulePendingReference(transactionId: string, attempts: number, nextAttemptAt: string): Promise<void>;
+  resolvePendingReference(transactionId: string, attempts: number, at: string): Promise<void>;
+  /** Antecipa as operações que esperam por esta identidade, para o worker reavaliá-las sem aguardar o backoff. */
+  wakeDependents(providerId: string, externalTransactionId: string, at: string): Promise<void>;
+}
+
+export interface PendingSchedule {
+  readonly attempts: number;
+  readonly deadlineAt: string;
+}
+
+export interface PendingReferenceClaim {
+  readonly transactionId: string;
+  readonly walletId: string;
+}
+
+/** Claim durável da agenda de referências, no mesmo padrão da outbox: token e lease, sem transação aberta. */
+export interface PendingReferenceStore {
+  claim(token: string, now: string, leaseUntil: string, limit: number): Promise<PendingReferenceClaim[]>;
 }
 
 export interface ClaimedEvent {
