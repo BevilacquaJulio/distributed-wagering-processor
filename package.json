@@ -28,7 +28,8 @@
     "db:migrate": "bun scripts/migrate.ts up",
     "db:down": "bun scripts/migrate.ts down",
     "sqs:provision": "bun scripts/queues.ts provision",
-    "sqs:status": "bun scripts/queues.ts status"
+    "sqs:status": "bun scripts/queues.ts status",
+    "sqs:send": "bun scripts/send-command.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1138.0",
