@@ -48,6 +48,13 @@ export class WagerTransactionRejected extends IntegrationEvent {
   }
 }
 
+export class WagerTransactionPendingReference extends IntegrationEvent {
+  readonly eventType = 'WagerTransactionPendingReference';
+  static from(transaction: TransactionState, context: EventContext): WagerTransactionPendingReference {
+    return new WagerTransactionPendingReference(context, transaction.walletId, { transaction: structuredClone(transaction) });
+  }
+}
+
 export class WalletBalanceChanged extends IntegrationEvent {
   readonly eventType = 'WalletBalanceChanged';
   static from(entry: LedgerState, walletVersion: number, context: EventContext): WalletBalanceChanged {

@@ -2,7 +2,7 @@ import { EntitySchema, Type } from '@mikro-orm/core';
 import type { TransactionResult } from '../../application/ports';
 import type { FailureCode } from '../../domain/errors';
 import type { EventEnvelope } from '../../domain/events';
-import type { BetCommand, TransactionState } from '../../domain/wager-transaction';
+import type { TransactionKind, TransactionStatus, WagerCommand } from '../../domain/wager-transaction';
 
 export class ExactDecimalType extends Type<string, string> {
   override convertToDatabaseValue(value: string): string {
@@ -21,8 +21,8 @@ export interface WalletRow {
   id: string; playerId: string; currency: string; balance: string; version: number; createdAt: Date; updatedAt: Date;
 }
 export interface TransactionRow {
-  id: string; walletId: string; playerId: string; kind: TransactionState['kind']; amount: string; currency: string;
-  status: TransactionState['status']; failureCode: FailureCode | null; command: BetCommand | null; createdAt: Date; processedAt: Date | null;
+  id: string; walletId: string; playerId: string; kind: TransactionKind; amount: string; currency: string;
+  status: TransactionStatus; failureCode: FailureCode | null; command: WagerCommand | null; createdAt: Date; processedAt: Date | null;
 }
 export interface LedgerRow {
   id: string; walletId: string; transactionId: string; direction: 'CREDIT' | 'DEBIT'; amount: string; currency: string;

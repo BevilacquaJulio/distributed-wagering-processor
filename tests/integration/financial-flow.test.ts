@@ -1,51 +1,31 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import type { MikroORM } from '@mikro-orm/postgresql';
-import type { NestExpressApplication } from '@nestjs/platform-express';
-import { createApplication } from '../../src/bootstrap';
-import { readConfig } from '../../src/config';
 import { WageringService } from '../../src/application/wagering-service';
 import { SystemClock, UuidGenerator, Sha256PayloadHasher, UnauthenticatedProviderIdentity } from '../../src/infrastructure/identity';
 import { PostgresQueries } from '../../src/infrastructure/postgres/queries';
 import { PostgresUnitOfWork } from '../../src/infrastructure/postgres/unit-of-work';
 import type { TransactionResult } from '../../src/application/ports';
-import type { BetCommand } from '../../src/domain/wager-transaction';
+import type { WagerCommand } from '../../src/domain/wager-transaction';
 import type { WalletState } from '../../src/domain/wallet';
 import type { LedgerState } from '../../src/domain/ledger-entry';
-import { api as panelApi, getWallet as panelGetWallet, submitBet as panelSubmitBet } from '../../web/src/api';
-import { connectDisposableDatabase } from '../support/database';
+import { api as panelApi, getWallet as panelGetWallet, getTransactionByExternal as panelGetTransaction, submitWager as panelSubmitWager } from '../../web/src/api';
+import { openWallet, send, startTestApi, type TestApi, wager } from '../support/api';
 
+let api: TestApi;
 let orm: MikroORM;
-let app: NestExpressApplication;
 let base: string;
 
 beforeAll(async () => {
-  const config = readConfig();
-  orm = await connectDisposableDatabase(config.DATABASE_URL);
-  app = await createApplication(config);
-  await app.listen(0, '127.0.0.1');
-  base = await app.getUrl();
+  api = await startTestApi();
+  ({ orm, base } = api);
 });
 
-afterAll(async () => { await app?.close(); await orm?.close(true); });
+afterAll(async () => { await api?.close(); });
 
-async function request(path: string, method = 'GET', body?: unknown, key?: string) {
-  return fetch(`${base}${path}`, {
-    method, headers: { 'Content-Type': 'application/json', ...(key ? { 'Idempotency-Key': key } : {}) },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15000),
-  });
-}
-
-async function open(amount = '100.00'): Promise<WalletState> {
-  const response = await request('/wallets', 'POST', { playerId: randomUUID(), initialBalance: { amount, currency: 'BRL' } });
-  expect(response.status).toBe(201);
-  return response.json() as Promise<WalletState>;
-}
-
-function command(wallet: WalletState, amount = '25.00'): BetCommand {
-  return { providerId: 'provider-a', externalTransactionId: randomUUID(), playerId: wallet.playerId,
-    walletId: wallet.id, roundId: 'round-1', gameId: 'game-1', kind: 'BET', money: { amount, currency: 'BRL' } };
-}
+const request = (path: string, method = 'GET', body?: unknown, key?: string) => send(base, path, method, body, key);
+const open = (amount = '100.00') => openWallet(base, amount);
+const command = (wallet: WalletState, amount = '25.00'): WagerCommand => wager(wallet, 'BET', amount);
 
 async function counts(walletId: string) {
   const rows = await orm.em.fork().execute<{ ledger: string; events: string; transactions: string }[]>(`
@@ -114,7 +94,7 @@ describe('fluxo financeiro em PostgreSQL real', () => {
     const key = randomUUID();
     const service = new WageringService(new PostgresUnitOfWork(orm, async () => { throw new Error('falha injetada'); }),
       new SystemClock(), new UuidGenerator(), new Sha256PayloadHasher(), new UnauthenticatedProviderIdentity());
-    await expect(service.bet(bet, key, randomUUID())).rejects.toThrow('falha injetada');
+    await expect(service.submit(bet, key, randomUUID())).rejects.toThrow('falha injetada');
     expect(await counts(wallet.id)).toEqual({ ledger: '1', events: '2', transactions: '1' });
     expect((await new PostgresQueries(orm).wallet(wallet.id)).balance.amount).toBe('100.00');
     const identities = await orm.em.fork().execute<{ transaction_id: string }[]>('select transaction_id from wager_identities where idempotency_key = ?', [key]);
@@ -199,15 +179,20 @@ describe('fluxo financeiro em PostgreSQL real', () => {
     try {
       const wallet = await open();
       const id = randomUUID();
-      const submission = { wallet, fields: { providerId: 'provider-a', externalTransactionId: id,
-        idempotencyKey: `provider-a:${id}`, roundId: 'round-1', gameId: 'game-1', amount: '25.00' } };
-      expect((await panelSubmitBet(submission)).balance?.amount).toBe('75.00');
-      expect((await panelSubmitBet(submission)).idempotentReplay).toBe(true);
+      const submission = { wallet, fields: { kind: 'BET' as const, providerId: 'provider-a', externalTransactionId: id,
+        idempotencyKey: `provider-a:${id}`, roundId: 'round-1', gameId: 'game-1', amount: '25.00', reference: '' } };
+      expect((await panelSubmitWager(submission)).balance?.amount).toBe('75.00');
+      expect((await panelSubmitWager(submission)).idempotentReplay).toBe(true);
       expect((await panelGetWallet(wallet.id)).balance.amount).toBe('75.00');
-      const rejected = await panelSubmitBet({ wallet, fields: { ...submission.fields, externalTransactionId: randomUUID(),
+      const rejected = await panelSubmitWager({ wallet, fields: { ...submission.fields, externalTransactionId: randomUUID(),
         idempotencyKey: randomUUID(), amount: '80.00' } });
       expect(rejected.status).toBe('REJECTED');
       expect(rejected.failureCode).toBe('INSUFFICIENT_FUNDS');
+      const refund = { ...submission.fields, kind: 'REFUND' as const, externalTransactionId: randomUUID(), idempotencyKey: randomUUID(),
+        reference: randomUUID() };
+      expect((await panelSubmitWager({ wallet, fields: refund })).status).toBe('PENDING_REFERENCE');
+      const pending = await panelGetTransaction('provider-a', refund.externalTransactionId);
+      expect(pending).toMatchObject({ kind: 'REFUND', status: 'PENDING_REFERENCE', result: { status: 'PENDING_REFERENCE' } });
     } finally {
       if (originalBase === undefined) delete panelApi.defaults.baseURL;
       else panelApi.defaults.baseURL = originalBase;

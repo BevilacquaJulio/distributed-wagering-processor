@@ -2,12 +2,12 @@ import type { FailureCode } from '../domain/errors';
 import type { EventEnvelope } from '../domain/events';
 import type { LedgerEntry, LedgerState } from '../domain/ledger-entry';
 import type { MoneyProps } from '../domain/money';
-import type { WagerTransaction, TransactionState } from '../domain/wager-transaction';
+import type { SubmittedKind, WagerTransaction, TransactionState } from '../domain/wager-transaction';
 import type { Wallet, WalletState } from '../domain/wallet';
 
 export interface TransactionResult {
   readonly transactionId: string;
-  readonly status: 'PROCESSED' | 'REJECTED';
+  readonly status: 'PROCESSED' | 'REJECTED' | 'PENDING_REFERENCE';
   readonly balance: MoneyProps;
   readonly failureCode?: FailureCode;
   readonly idempotentReplay: boolean;
@@ -30,7 +30,13 @@ export interface FinancialSession {
   insertTransaction(transaction: WagerTransaction): Promise<void>;
   appendLedger(entry: LedgerEntry): Promise<void>;
   saveResult(result: TransactionResult): Promise<void>;
+  /** Snapshot do aceite pendente; o resultado terminal é gravado separadamente quando a referência for resolvida. */
+  saveAcceptance(result: TransactionResult): Promise<void>;
   enqueue(event: EventEnvelope): Promise<void>;
+  findReference(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
+  hasProcessedReversal(referenceTransactionId: string, kind: SubmittedKind): Promise<boolean>;
+  linkReference(transactionId: string, referenceTransactionId: string, kind: SubmittedKind): Promise<void>;
+  schedulePendingReference(transactionId: string, nextAttemptAt: string, deadlineAt: string): Promise<void>;
 }
 
 export interface FinancialUnitOfWork {
@@ -53,10 +59,15 @@ export interface Reconciliation {
   readonly checkedEntries: number;
 }
 
+export interface TransactionView extends TransactionState {
+  /** Resposta persistida: terminal quando existir, senão o aceite pendente. */
+  readonly result: TransactionResult | null;
+}
+
 export interface FinancialQueries {
   wallet(id: string): Promise<WalletState>;
-  transaction(id: string): Promise<TransactionState>;
-  transactionByExternal(providerId: string, externalTransactionId: string): Promise<TransactionState>;
+  transaction(id: string): Promise<TransactionView>;
+  transactionByExternal(providerId: string, externalTransactionId: string): Promise<TransactionView>;
   ledger(walletId: string, limit: number, cursor?: LedgerCursor): Promise<LedgerPage>;
   reconcile(walletId: string): Promise<Reconciliation>;
 }

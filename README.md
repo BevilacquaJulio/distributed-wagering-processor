@@ -1,10 +1,10 @@
 # Distributed Wagering Processor
 
-Primeira implementação do processador financeiro Jungle Gaming: abertura de wallet, BET, ledger, outbox persistida, replay e painel local de testes. Dinheiro é string decimal nos contratos e bigint em centavos no domínio.
+Processador financeiro Jungle Gaming: abertura de wallet, BET, WIN, LOSS, REFUND e ROLLBACK, ledger, outbox persistida, replay, referências fora de ordem persistidas e painel local de testes. Dinheiro é string decimal nos contratos e bigint em centavos no domínio.
 
 **Estado:** dependências instaladas com Bun 1.4.2 e `bun.lock` versionado. Typecheck (API e painel), lint, testes de unidade, builds, integração com PostgreSQL real (provisionamento e migration em banco descartável) e conferência manual do painel executados com sucesso. Build Docker da API ainda sem registro.
 
-A concorrência entre três processos da API está comprovada por testes reais. WIN, LOSS, REFUND, ROLLBACK, SQS/inbox, publicação da outbox e referências pendentes pertencem às próximas entregas. O painel oferece wallet, BET, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
+A concorrência entre três processos da API está comprovada por testes reais. Uma operação que chega antes da referência fica `PENDING_REFERENCE` com aceite, agenda e evento duráveis; o worker que a reavalia, SQS/inbox e a publicação da outbox pertencem à próxima entrega. O painel oferece wallet, todas as operações, consulta de transação, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
 
 ## Como executar o projeto
 
@@ -125,6 +125,7 @@ A disputa é sincronizada por uma barreira no próprio PostgreSQL, sem `sleep`: 
 | Vinte BETs de 10.00 contra 100.00 | Dez processadas, cada uma com um saldo observado distinto (90.00 a 0.00), e dez rejeitadas. |
 | Wallet bloqueada e outra wallet | A segunda wallet é processada enquanto a primeira continua bloqueada. |
 | Trinta criações da mesma wallet | Uma 201 e 29 409 `WALLET_ALREADY_EXISTS`; uma única wallet no banco. |
+| Dois REFUNDs da mesma BET | Um processado e outro `REFERENCE_ALREADY_REVERSED`; um único crédito. |
 
 Cada cenário confere saldo, version, reconciliação com o ledger e a contagem de lançamentos por direção, transações por status e eventos da outbox por tipo.
 
@@ -138,7 +139,10 @@ A reversão da migration apaga o histórico e não faz parte do procedimento nor
 4. Usar **Nova operação**, enviar outra BET e verificar que o saldo atual mudou; o resultado de uma operação anterior continua histórico.
 5. Enviar valor acima do saldo; confirmar rejeição auditável e ausência de débito.
 6. Usar **Conferir saldo** e verificar diferença `0.00`.
-7. Conferir navegação por teclado, foco, mensagens de validação, estados de erro/indisponibilidade e layout móvel. Essa inspeção visual ainda está pendente.
+7. Trocar o tipo para **REFUND**, usar **Referenciar o último envio** e confirmar o crédito integral; repetir com nova operação e ver `REFERENCE_ALREADY_REVERSED`.
+8. Enviar um **ROLLBACK** com um ID externo que ainda não existe; confirmar a resposta 202 `PENDING_REFERENCE` e consultar a transação em **Consultar transação**.
+9. Enviar **LOSS** com `0.00` e confirmar que saldo e versão não mudam.
+10. Conferir navegação por teclado, foco, mensagens de validação, estados de erro/indisponibilidade e layout móvel. Essa inspeção visual ainda está pendente.
 
 ## Contrato implementado
 
@@ -146,8 +150,8 @@ A reversão da migration apaga o histórico e não faz parte do procedimento nor
 | --- | --- |
 | POST `/wallets` | Cria wallet única por jogador/moeda; abertura positiva gera OPENING e ledger. |
 | GET `/wallets/:walletId` | Saldo e versão atuais. |
-| POST `/wagering/transactions` | BET com `Idempotency-Key` obrigatório. |
-| GET `/wagering/transactions/:transactionId` | Estado da transação. |
+| POST `/wagering/transactions` | BET, WIN, LOSS, REFUND e ROLLBACK com `Idempotency-Key` obrigatório. |
+| GET `/wagering/transactions/:transactionId` | Estado atual, vínculo com a referência e resposta persistida (terminal ou aceite pendente). |
 | GET `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consulta identidade externa. |
 | GET `/wallets/:walletId/ledger?limit=50&cursor=...` | Ordem crescente, cursor opaco e limite de 1 a 100. |
 | POST `/wallets/:walletId/reconciliation` | Compara saldo e ledger em snapshot consistente; não corrige divergência. |
@@ -155,7 +159,24 @@ A reversão da migration apaga o histórico e não faz parte do procedimento nor
 
 Money: `{ "amount": "25.00", "currency": "BRL" }`, duas casas obrigatórias, sem sinais/expoentes/espaços/zeros à esquerda. UUIDs identificam jogador e recursos internos. Provedor, ID externo, chave, rodada e jogo aceitam de 1 a 128 caracteres de letras ASCII, números, `.`, `_`, `:`, `-`, começando por letra/número; não há trim ou mudança de caixa. Body JSON tem limite de 16 KiB e rejeita campos desconhecidos.
 
-HTTP: 201 criação, 200 processamento/consulta, 400 formato/header, 404 recurso inexistente, 409 colisão, 422 rejeição financeira e 503 indisponibilidade transitória reconhecida. A rejeição financeira inclui ID, status, failureCode e saldo observado. Erros de transporte usam `{ error: { code, message, requestId } }`, sem SQL, stack ou secrets. Kinds ainda não implementados, inclusive OPENING externo, são recusados pelo contrato desta etapa.
+`referenceExternalTransactionId` é o ID externo da operação referenciada no mesmo provedor: obrigatório em REFUND e ROLLBACK, opcional em WIN e recusado em BET e LOSS; `null` ou vazio são inválidos. LOSS usa `0.00`; as demais operações exigem valor positivo. REFUND reverte BET; ROLLBACK reverte BET, WIN ou REFUND no sentido inverso; ambos exigem valor integral e mesma wallet, jogador, moeda e rodada. A unicidade de reversão é por referência e tipo, conforme o case: uma BET pode receber um REFUND e um ROLLBACK.
+
+HTTP: 201 criação, 200 processamento/consulta, 202 aceite com referência ainda ausente (`PENDING_REFERENCE`), 400 formato/header, 404 recurso inexistente, 409 colisão, 422 rejeição financeira e 503 indisponibilidade transitória reconhecida. 202 não é resultado financeiro final; o replay devolve o aceite enquanto a operação estiver pendente. A rejeição financeira inclui ID, status, failureCode e saldo observado. Erros de transporte usam `{ error: { code, message, requestId } }`, sem SQL, stack ou secrets. OPENING é interno e recusado pelo contrato.
+
+| `failureCode` | Situação | O que o provedor pode fazer |
+| --- | --- | --- |
+| `INSUFFICIENT_FUNDS` | BET maior que o saldo. | Não reenviar igual; nova aposta exige nova identidade. |
+| `REVERSAL_INSUFFICIENT_FUNDS` | ROLLBACK de WIN/REFUND sem saldo para desfazer o crédito. | Tratamento operacional; não é falta de saldo de aposta. |
+| `AMOUNT_NOT_ALLOWED` | LOSS diferente de 0.00 ou demais operações com 0.00. | Corrigir o payload com nova identidade. |
+| `BALANCE_LIMIT_EXCEEDED` | Crédito ultrapassaria 999999999999999999.99. | Corrigir o valor com nova identidade. |
+| `CURRENCY_MISMATCH` / `CURRENCY_NOT_SUPPORTED` | Moeda diferente da wallet ou não habilitada. | Corrigir a moeda. |
+| `WALLET_PLAYER_MISMATCH` | Jogador não é dono da wallet. | Corrigir jogador ou wallet. |
+| `INVALID_REFERENCE` | Operação referencia o próprio ID externo. | Corrigir a referência. |
+| `REFERENCE_NOT_PROCESSED` | Referência existe, mas foi rejeitada ou falhou. | Desistir da reversão. |
+| `REFERENCE_MISMATCH` | Tipo, jogador, wallet, moeda ou rodada incompatíveis. | Corrigir a referência. |
+| `REFERENCE_AMOUNT_MISMATCH` | Valor da reversão diferente do original. | Enviar o valor integral. |
+| `REFERENCE_ALREADY_REVERSED` | Já existe reversão processada do mesmo tipo para a referência. | Nada a fazer; o efeito já foi aplicado. |
+| `REFERENCE_EXPIRED` | Referência não chegou dentro do prazo (aplicado pelo worker da próxima entrega). | Reenviar a operação original, se ainda for devida. |
 
 ## CI
 
