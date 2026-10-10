@@ -1,7 +1,7 @@
 import { LockMode } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import { ApplicationError } from '../../application/errors';
-import type { FinancialSession, Identity, TransactionResult } from '../../application/ports';
+import type { FinancialSession, Identity, InboxDelivery, InboxRecord, TransactionResult } from '../../application/ports';
 import type { EventEnvelope } from '../../domain/events';
 import type { LedgerEntry } from '../../domain/ledger-entry';
 import type { SubmittedKind, WagerTransaction } from '../../domain/wager-transaction';
@@ -11,6 +11,24 @@ import { ledgerToRow, transactionFromRow, transactionToRow, walletFromRow, walle
 
 export class PostgresFinancialSession implements FinancialSession {
   constructor(private readonly em: EntityManager) {}
+
+  async receiveInbox(delivery: InboxDelivery, at: string): Promise<InboxRecord | null> {
+    const inserted = await this.em.execute<{ message_id: string }[]>(`
+      insert into inbox_messages (consumer_name, message_id, payload_hash, received_at) values (?, ?, ?, ?)
+      on conflict do nothing returning message_id`, [delivery.consumerName, delivery.messageId, delivery.payloadHash, at]);
+    if (inserted.length > 0) return null;
+    const rows = await this.em.execute<InboxRecord[]>(`
+      select payload_hash as "payloadHash", transaction_id as "transactionId"
+      from inbox_messages where consumer_name = ? and message_id = ?`, [delivery.consumerName, delivery.messageId]);
+    const existing = rows[0];
+    if (!existing) throw new Error('Conflicting inbox message was not visible');
+    return existing;
+  }
+
+  async completeInbox(delivery: InboxDelivery, transactionId: string, at: string): Promise<void> {
+    await this.em.execute('update inbox_messages set transaction_id = ?, processed_at = ? where consumer_name = ? and message_id = ?',
+      [transactionId, at, delivery.consumerName, delivery.messageId]);
+  }
 
   async reserve(identity: Identity): Promise<Identity | null> {
     const inserted = await this.em.execute<{ transaction_id: string }[]>(`

@@ -17,6 +17,24 @@ export function readConfig(environment: Record<string, string | undefined> = pro
   return parsed.data;
 }
 
+const queueName = z.string().regex(/^[A-Za-z0-9_-]{1,75}\.fifo$/);
+const messagingSchema = z.object({
+  // Sem endpoint, o SDK usa o endpoint regional da AWS; localmente aponta para o emulador.
+  SQS_ENDPOINT: z.string().url().optional(),
+  SQS_REGION: z.string().regex(/^[a-z]{2}-[a-z]+-\d$/).default('us-east-1'),
+  SQS_COMMAND_QUEUE: queueName.default('wager-transactions.fifo'),
+  SQS_DEAD_LETTER_QUEUE: queueName.default('wager-transactions-dlq.fifo'),
+  SQS_CONSUMER_NAME: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).default('wager-transactions-consumer'),
+});
+
+export type MessagingConfig = z.infer<typeof messagingSchema>;
+
+export function readMessagingConfig(environment: Record<string, string | undefined> = process.env): MessagingConfig {
+  const parsed = messagingSchema.safeParse(environment);
+  if (!parsed.success) throw new Error(`Invalid environment keys: ${parsed.error.issues.map((issue) => issue.path.join('.')).join(', ')}`);
+  return parsed.data;
+}
+
 export function adminUrl(): string {
   const result = databaseUrl.safeParse(process.env.DATABASE_ADMIN_URL);
   if (!result.success) throw new Error('DATABASE_ADMIN_URL is required');

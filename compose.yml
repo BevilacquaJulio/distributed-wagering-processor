@@ -15,18 +15,51 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+  sqs:
+    image: ministackorg/ministack:1.5.15
+    ports:
+      - "127.0.0.1:4566:4566"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4566/_ministack/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
   api:
     image: jungle-wagering-api:local
     build: .
-    environment:
+    environment: &runtime-environment
       DATABASE_URL: ${DATABASE_URL_CONTAINER:?Defina DATABASE_URL_CONTAINER em .env}
       HOST: 0.0.0.0
       PORT: 3000
+      SQS_ENDPOINT: ${SQS_ENDPOINT_CONTAINER:-http://sqs:4566}
+      SQS_REGION: ${SQS_REGION:-us-east-1}
+      SQS_COMMAND_QUEUE: ${SQS_COMMAND_QUEUE:-wager-transactions.fifo}
+      SQS_DEAD_LETTER_QUEUE: ${SQS_DEAD_LETTER_QUEUE:-wager-transactions-dlq.fifo}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?Defina AWS_ACCESS_KEY_ID em .env}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?Defina AWS_SECRET_ACCESS_KEY em .env}
     ports:
       - "127.0.0.1:3000:3000"
-    depends_on:
+    depends_on: &runtime-dependencies
       postgres:
         condition: service_healthy
+      sqs:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  # Mesmo build da API; o SIGTERM interrompe o long polling e devolve a visibilidade do que não foi processado.
+  consumer:
+    image: jungle-wagering-api:local
+    build: .
+    command: ["bun", "dist/consumer.js"]
+    environment: *runtime-environment
+    depends_on: *runtime-dependencies
+    healthcheck:
+      disable: true
     init: true
     stop_grace_period: 30s
     read_only: true

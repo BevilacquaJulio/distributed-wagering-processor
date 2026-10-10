@@ -4,14 +4,14 @@ Processador financeiro Jungle Gaming: abertura de wallet, BET, WIN, LOSS, REFUND
 
 **Estado:** dependências instaladas com Bun 1.4.2 e `bun.lock` versionado. Typecheck (API e painel), lint, testes de unidade, builds, integração com PostgreSQL real (provisionamento e migration em banco descartável) e conferência manual do painel executados com sucesso. Build Docker da API ainda sem registro.
 
-A concorrência entre três processos da API está comprovada por testes reais. Uma operação que chega antes da referência fica `PENDING_REFERENCE` com aceite, agenda e evento duráveis; o worker que a reavalia, SQS/inbox e a publicação da outbox pertencem à próxima entrega. O painel oferece wallet, todas as operações, consulta de transação, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
+A concorrência entre três processos da API está comprovada por testes reais. Comandos também chegam pela fila SQS `wager-transactions.fifo`, consumida com inbox persistente e ack depois do commit pelo mesmo caso de uso da API. Uma operação que chega antes da referência fica `PENDING_REFERENCE` com aceite, agenda e evento duráveis; o publisher da outbox e o worker que reavalia pendências pertencem às próximas partes da entrega. O painel oferece wallet, todas as operações, consulta de transação, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
 
 ## Como executar o projeto
 
 ### Pré-requisitos
 
 - Bun **1.4.2**, conforme `.bun-version` e `packageManager`; [instalação oficial](https://bun.com/docs/installation).
-- Docker com Docker Compose v2 para PostgreSQL; PostgreSQL local usa a imagem `postgres:17.6-alpine`.
+- Docker com Docker Compose v2 para PostgreSQL (`postgres:17.6-alpine`) e o emulador SQS [MiniStack](https://ministack.org/) (`ministackorg/ministack:1.5.15`). O MiniStack não exige conta nem token; o LocalStack passou a exigir token a partir da versão 2026.03.0.
 - Git para obter o código. Nenhum Node/npm separado é usado pelos comandos abaixo; a prova de compatibilidade das bibliotecas com Bun ainda deve ser executada.
 
 As instruções abaixo estão em PowerShell e pressupõem a raiz do repositório. Os comandos alteram somente o ambiente local configurado; são passos manuais. Não há migration em bootstrap, healthcheck, setup de teste ou inicialização de container.
@@ -39,12 +39,13 @@ A primeira instalação gera o lockfile único `bun.lock`. Revisá-lo e version�
 
 ```powershell
 docker compose -f compose.yml config --quiet
-docker compose -f compose.yml up -d postgres
+docker compose -f compose.yml up -d postgres sqs
 docker compose -f compose.yml ps
 bun run db:provision
 bun run db:status
 bun run db:migrate
 bun run db:status
+bun run sqs:provision
 bun run dev
 ```
 
@@ -63,20 +64,28 @@ Invoke-RestMethod http://127.0.0.1:3000/health/live
 Invoke-RestMethod http://127.0.0.1:3000/health/ready
 ```
 
-Readiness desta entrega cobre PostgreSQL e versão do schema, com `scope: http-bet` e SQS explicitamente `not-implemented`. Isso não comprova a readiness final PostgreSQL/SQS exigida pelo case.
+Readiness responde 200 somente com o schema na versão esperada e a fila de comandos alcançável; caso contrário, 503. Ela não cria filas nem aplica migrations.
+
+`sqs:provision` cria manualmente `wager-transactions.fifo` (visibilidade de 30s, redrive para a DLQ após 5 recebimentos) e `wager-transactions-dlq.fifo` (retenção de 14 dias); `sqs:status` mostra os atributos. O comando é idempotente para os mesmos atributos.
+
+Consumidor da fila, em outro terminal:
+
+```powershell
+bun run consumer
+```
 
 ### Rodando a API em Docker
 
 Depois de gerar `bun.lock`, subir PostgreSQL e aplicar manualmente as migrations acima:
 
 ```powershell
-docker compose -f compose.yml up -d --build api
+docker compose -f compose.yml up -d --build api consumer
 docker compose -f compose.yml ps
-docker compose -f compose.yml logs -f --tail=100 api postgres
+docker compose -f compose.yml logs -f --tail=100 api consumer postgres sqs
 docker compose -f compose.yml down
 ```
 
-Parar a API executada no host antes de iniciar o container na mesma porta. A API usa `DATABASE_URL_CONTAINER`, com host `postgres`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. O painel continua pelo Vite no host nesta entrega. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
+Parar a API e o consumidor executados no host antes de iniciar os containers. O serviço `consumer` usa a mesma imagem com `bun dist/consumer.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem em andamento. Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. O painel continua pelo Vite no host nesta entrega. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
 
 ## Validação
 
@@ -98,8 +107,9 @@ Unidade cobre Money, wallet, ledger, terminalidade, hash e contratos. `build` ge
 Usar `.env.test` com URLs locais terminando em `/jungle_test`, porta `55433` e `TEST_DATABASE_DISPOSABLE=yes`. Preparar o banco separado:
 
 ```powershell
-docker compose -f compose.yml --profile test up -d postgres-test
+docker compose -f compose.yml --profile test up -d postgres-test sqs
 docker compose -f compose.yml --profile test ps
+bun --env-file=.env.test run sqs:provision
 bun --env-file=.env.test run db:provision
 bun --env-file=.env.test run db:status
 bun --env-file=.env.test run db:migrate
@@ -108,7 +118,7 @@ bun run test:concurrency
 docker compose -f compose.yml --profile test logs --tail=100 postgres-test
 ```
 
-Esperar `postgres-test` healthy. Os testes recusam banco com outro nome/host e não aplicam migrations nem apagam histórico. Geram identidades próprias e incluem API HTTP real, round-trip monetário, replay histórico, conflitos, rejeições, rollback pré-commit, permissões/constraints, paginação e o cliente HTTP do painel contra a API real.
+Esperar `postgres-test` e `sqs` healthy. As filas de teste (`wager-transactions-test*.fifo`) são separadas das de desenvolvimento; os testes do consumidor criam e removem filas próprias com visibilidade curta. Os testes recusam banco com outro nome/host e não aplicam migrations nem apagam histórico. Geram identidades próprias e incluem API HTTP real, round-trip monetário, replay histórico, conflitos, rejeições, rollback pré-commit, permissões/constraints, paginação e o cliente HTTP do painel contra a API real.
 
 O PostgreSQL de testes usa tmpfs: parar/recriar o container pode perder os dados desse serviço, exigindo novo provisionamento e migrations. O volume de desenvolvimento é separado. Não usar `down -v` como atualização normal.
 
@@ -178,6 +188,21 @@ HTTP: 201 criação, 200 processamento/consulta, 202 aceite com referência aind
 | `REFERENCE_ALREADY_REVERSED` | Já existe reversão processada do mesmo tipo para a referência. | Nada a fazer; o efeito já foi aplicado. |
 | `REFERENCE_EXPIRED` | Referência não chegou dentro do prazo (aplicado pelo worker da próxima entrega). | Reenviar a operação original, se ainda for devida. |
 
+## Fila de comandos
+
+Envelope (§10 do case): `messageId`, `type: "WagerTransactionRequested"`, `occurredAt` ISO-8601 e `data` com os mesmos campos do POST de transação mais `idempotencyKey`. O consumidor usa o mesmo caso de uso da API, com a inbox `(consumerName, messageId)` na mesma transação SQL. Recomenda-se `MessageGroupId` por wallet; deduplicação do broker é otimização, não garantia.
+
+| Situação | Tratamento |
+| --- | --- |
+| Processada, rejeitada por regra de negócio ou `PENDING_REFERENCE` | Commit e depois ack (`DeleteMessage`). |
+| Mesmo `messageId` com o mesmo conteúdo, ou operação já feita por HTTP | Replay do resultado persistido e ack, sem novo efeito. |
+| JSON inválido, envelope fora do contrato, OPENING ou kind desconhecido | DLQ com `failureReason = INVALID_ENVELOPE`. |
+| Mesmo `messageId` com outro conteúdo | DLQ com `INBOX_CONFLICT`; o primeiro efeito é preservado. |
+| Conflito de chave ou ID externo; wallet inexistente | DLQ com `IDEMPOTENCY_CONFLICT`, `EXTERNAL_ID_CONFLICT` ou `WALLET_NOT_FOUND`. |
+| Falha transitória (banco indisponível, deadlock esgotado, erro inesperado) | Sem ack; visibilidade com backoff exponencial (2s a 60s). Ao exceder 5 recebimentos, o redrive do broker move para a DLQ. |
+
+A mensagem permanente só é apagada depois que a DLQ confirma o envio. Um crash depois do commit e antes do ack é resolvido pela inbox na reentrega. No SIGTERM, o consumidor interrompe o long polling, conclui a mensagem em andamento e devolve a visibilidade das que ainda não começaram.
+
 ## CI
 
 O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualização de PR para `teste` ou `main`, e também por **Actions → CI → Run workflow**.
@@ -187,7 +212,7 @@ O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualiza
 | **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit` com cobertura LCOV, `build`, `build:web`. |
 | **Auditoria de dependências** | `bun audit --audit-level=high`; falha com vulnerabilidade alta ou crítica. |
 | **Imagem Docker e Compose** | Valida o `compose.yml` e constrói a imagem da API. |
-| **Integração com PostgreSQL real** | Sobe o `postgres-test` do Compose com credenciais geradas na execução, provisiona, aplica a migration, roda `test:integration` com cobertura LCOV e `test:concurrency`, reverte e reaplica a migration. Publica o log como artefato. |
+| **Integração com PostgreSQL real** | Sobe `postgres-test` e o emulador SQS do Compose com credenciais geradas na execução, cria as filas de teste, provisiona, aplica as migrations, roda `test:integration` (inclui o consumidor e o SIGTERM do processo real) com cobertura LCOV e `test:concurrency`, reverte e reaplica a última migration. Publica o log como artefato. |
 | **SonarCloud Quality Gate** | Envia a cobertura de unidade e integração ao SonarCloud e aguarda o Quality Gate (inclui 80% de cobertura no código novo). |
 
 O workflow `CodeQL` (`.github/workflows/codeql.yml`) analisa JavaScript/TypeScript em PRs e em pushes para `teste` e `main`; a análise das branches fixas é a base para identificar alertas novos.

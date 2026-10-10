@@ -1,10 +1,13 @@
 import { Body, Controller, Get, Headers, HttpCode, Inject, Param, Post, Query, Res, ServiceUnavailableException } from '@nestjs/common';
 import type { MikroORM } from '@mikro-orm/postgresql';
+import type { SQSClient } from '@aws-sdk/client-sqs';
+import type { MessagingConfig } from '../config';
 import type { FinancialQueries } from '../application/ports';
 import { WageringService } from '../application/wagering-service';
 import { cursorSchema, identifier, ledgerQuerySchema, openWalletSchema, uuid, wagerSchema } from '../contracts/requests';
 import { logEvent, Metrics, requestContext } from '../infrastructure/observability';
 import { SCHEMA_VERSION } from '../infrastructure/postgres/config';
+import { assertQueueReachable, queueUrl } from '../infrastructure/sqs/client';
 import { InvalidRequest } from './error-filter';
 
 export const ORM = Symbol('ORM');
@@ -12,6 +15,8 @@ export const ORM = Symbol('ORM');
 const RESULT_STATUS = { PROCESSED: 200, PENDING_REFERENCE: 202, REJECTED: 422 } as const;
 const RESULT_METRIC = { PROCESSED: 'processed', PENDING_REFERENCE: 'pending_reference', REJECTED: 'rejected' } as const;
 export const QUERIES = Symbol('QUERIES');
+export const SQS = Symbol('SQS');
+export const MESSAGING = Symbol('MESSAGING');
 interface HttpResponse { status(code: number): HttpResponse; json(body: unknown): void; type(value: string): HttpResponse; send(body: string): void; }
 
 @Controller()
@@ -89,18 +94,37 @@ export class FinancialController {
 
 @Controller()
 export class HealthController {
-  constructor(@Inject(ORM) private readonly orm: MikroORM, @Inject(Metrics) private readonly metrics: Metrics) {}
+  constructor(
+    @Inject(ORM) private readonly orm: MikroORM,
+    @Inject(SQS) private readonly sqs: SQSClient,
+    @Inject(MESSAGING) private readonly messaging: MessagingConfig,
+    @Inject(Metrics) private readonly metrics: Metrics,
+  ) {}
 
   @Get('health/live')
   live() { return { status: 'up' }; }
 
   @Get('health/ready')
   async ready() {
+    const [postgres, sqs] = await Promise.all([this.postgresReady(), this.sqsReady()]);
+    if (!postgres || !sqs) throw new ServiceUnavailableException();
+    return { status: 'up', dependencies: { postgres: 'up', sqs: 'up' } };
+  }
+
+  private async postgresReady(): Promise<boolean> {
     try {
       const rows = await this.orm.em.fork().execute<{ version: number }[]>('select version from schema_version where version = ?', [SCHEMA_VERSION]);
-      if (!rows[0]) throw new Error('Schema unavailable');
-    } catch { throw new ServiceUnavailableException(); }
-    return { status: 'up', scope: 'http-bet', dependencies: { postgres: 'up', sqs: 'not-implemented' } };
+      return rows.length > 0;
+    } catch { return false; }
+  }
+
+  // A fila de comandos precisa existir e responder; a readiness não cria recursos.
+  private async sqsReady(): Promise<boolean> {
+    try {
+      const signal = AbortSignal.timeout(2000);
+      await assertQueueReachable(this.sqs, await queueUrl(this.sqs, this.messaging.SQS_COMMAND_QUEUE, signal), signal);
+      return true;
+    } catch { return false; }
   }
 
   @Get('metrics')
