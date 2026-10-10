@@ -88,9 +88,10 @@ export class OutboxPublisher {
 
     for (const event of claimed) {
       if (!confirmed.has(event.envelope.eventId)) continue;
+      const lagMs = Date.parse(this.clock.now()) - Date.parse(event.envelope.occurredAt);
       this.metrics.increment('event_published');
-      logEvent('event_published', { eventId: event.envelope.eventId, eventType: event.envelope.eventType,
-        attempts: event.attempts, lagMs: Date.parse(this.clock.now()) - Date.parse(event.envelope.occurredAt) });
+      this.metrics.observe('outbox_publish_lag_seconds', Math.max(0, lagMs) / 1000);
+      logEvent('event_published', { eventId: event.envelope.eventId, eventType: event.envelope.eventType, attempts: event.attempts, lagMs });
     }
     for (let index = 0; index < ownershipLost; index++) this.metrics.increment('event_ownership_lost');
     if (ownershipLost > 0) logEvent('outbox_ownership_lost', { events: ownershipLost });

@@ -123,6 +123,17 @@ export interface FinancialQueries {
   transactionByExternal(providerId: string, externalTransactionId: string): Promise<TransactionView>;
   ledger(walletId: string, limit: number, cursor?: LedgerCursor): Promise<LedgerPage>;
   reconcile(walletId: string): Promise<Reconciliation>;
+  backlog(): Promise<Backlog>;
+}
+
+/** Pendências operacionais lidas do banco no momento da coleta de métricas. */
+export interface Backlog {
+  readonly outboxPending: number;
+  readonly outboxOldestPendingSeconds: number;
+  readonly pendingReferencesOpen: number;
+  readonly pendingReferencesOldestSeconds: number;
+  /** Abertas com prazo vencido: o worker está parado ou atrasado. */
+  readonly pendingReferencesOverdue: number;
 }
 
 export interface ProviderIdentityPort {

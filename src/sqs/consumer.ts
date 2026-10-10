@@ -33,6 +33,8 @@ export type Outcome = 'processed' | 'duplicate' | 'retry' | 'dead_letter';
 // Conflitos e wallet inexistente não mudam com nova tentativa; vão para a DLQ com o motivo.
 const PERMANENT_CODES: ReadonlySet<ApplicationErrorCode> = new Set(['IDEMPOTENCY_CONFLICT', 'EXTERNAL_ID_CONFLICT', 'INBOX_CONFLICT', 'WALLET_NOT_FOUND']);
 
+const RESULT_METRIC = { PROCESSED: 'processed', PENDING_REFERENCE: 'pending_reference', REJECTED: 'rejected' } as const;
+
 type Parsed =
   | { readonly ok: true; readonly messageId: string; readonly command: WagerCommand; readonly idempotencyKey: string; readonly payloadHash: string }
   | { readonly ok: false; readonly reason: string };
@@ -80,6 +82,7 @@ export class SqsConsumer {
       await this.ack(message);
       const outcome = result.idempotentReplay ? 'duplicate' : 'processed';
       this.metrics.increment(outcome === 'duplicate' ? 'message_duplicate' : 'message_processed');
+      if (!result.idempotentReplay) this.metrics.increment(RESULT_METRIC[result.status]);
       logEvent('message_consumed', { messageId: parsed.messageId, transactionId: result.transactionId, walletId: parsed.command.walletId,
         providerId: parsed.command.providerId, status: result.status, outcome, receiveCount: this.receiveCount(message) });
       return outcome;

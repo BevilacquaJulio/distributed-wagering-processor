@@ -1,7 +1,7 @@
 import { IsolationLevel } from '@mikro-orm/core';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import { ApplicationError } from '../../application/errors';
-import type { FinancialQueries, LedgerCursor, LedgerPage, Reconciliation, TransactionResult, TransactionView } from '../../application/ports';
+import type { Backlog, FinancialQueries, LedgerCursor, LedgerPage, Reconciliation, TransactionResult, TransactionView } from '../../application/ports';
 import { Money } from '../../domain/money';
 import type { WalletState } from '../../domain/wallet';
 import { LedgerSchema, TransactionSchema, WalletSchema } from './entities';
@@ -63,5 +63,20 @@ export class PostgresQueries implements FinancialQueries {
       return { walletId, storedBalance: stored.toJSON(), calculatedBalance: calculated.toJSON(), difference: difference.toJSON(),
         consistent: difference.isZero(), checkedEntries: Number(total.entries) };
     }, { isolationLevel: IsolationLevel.REPEATABLE_READ });
+  }
+
+  async backlog(): Promise<Backlog> {
+    const [row] = await this.orm.em.fork().execute<Backlog[]>(`
+      select
+        (select count(*)::int from outbox_messages where published_at is null) as "outboxPending",
+        (select coalesce(extract(epoch from now() - min(occurred_at)), 0)::float8
+          from outbox_messages where published_at is null) as "outboxOldestPendingSeconds",
+        (select count(*)::int from pending_references where resolved_at is null) as "pendingReferencesOpen",
+        (select coalesce(extract(epoch from now() - min(t.created_at)), 0)::float8
+          from pending_references p join wager_transactions t on t.id = p.transaction_id
+          where p.resolved_at is null) as "pendingReferencesOldestSeconds",
+        (select count(*)::int from pending_references where resolved_at is null and deadline_at < now()) as "pendingReferencesOverdue"`);
+    if (!row) throw new Error('Backlog query returned no row');
+    return row;
   }
 }
