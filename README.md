@@ -4,7 +4,7 @@ Processador financeiro Jungle Gaming: abertura de wallet, BET, WIN, LOSS, REFUND
 
 **Estado:** dependências instaladas com Bun 1.4.2 e `bun.lock` versionado. Typecheck (API e painel), lint, testes de unidade, builds, integração com PostgreSQL real (provisionamento e migration em banco descartável) e conferência manual do painel executados com sucesso. Build Docker da API ainda sem registro.
 
-A concorrência entre três processos da API está comprovada por testes reais. Comandos também chegam pela fila SQS `wager-transactions.fifo`, consumida com inbox persistente e ack depois do commit pelo mesmo caso de uso da API. Uma operação que chega antes da referência fica `PENDING_REFERENCE` com aceite, agenda e evento duráveis; o publisher da outbox e o worker que reavalia pendências pertencem às próximas partes da entrega. O painel oferece wallet, todas as operações, consulta de transação, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
+A concorrência entre três processos da API está comprovada por testes reais. Comandos também chegam pela fila SQS `wager-transactions.fifo`, consumida com inbox persistente e ack depois do commit pelo mesmo caso de uso da API. Os eventos gravados na outbox no mesmo commit são entregues à fila `wager-events.fifo` por um processo publisher, que pode rodar em várias instâncias. Uma operação que chega antes da referência fica `PENDING_REFERENCE` com aceite, agenda e evento duráveis; o worker que reavalia pendências pertence à próxima parte da entrega. O painel oferece wallet, todas as operações, consulta de transação, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
 
 ## Como executar o projeto
 
@@ -66,12 +66,13 @@ Invoke-RestMethod http://127.0.0.1:3000/health/ready
 
 Readiness responde 200 somente com o schema na versão esperada e a fila de comandos alcançável; caso contrário, 503. Ela não cria filas nem aplica migrations.
 
-`sqs:provision` cria manualmente `wager-transactions.fifo` (visibilidade de 30s, redrive para a DLQ após 5 recebimentos) e `wager-transactions-dlq.fifo` (retenção de 14 dias); `sqs:status` mostra os atributos. O comando é idempotente para os mesmos atributos.
+`sqs:provision` cria manualmente `wager-transactions.fifo` (visibilidade de 30s, redrive para a DLQ após 5 recebimentos), `wager-transactions-dlq.fifo` (retenção de 14 dias) e a fila de eventos `wager-events.fifo` (retenção de 14 dias); `sqs:status` mostra os atributos. O comando é idempotente para os mesmos atributos.
 
-Consumidor da fila, em outro terminal:
+Consumidor da fila e publisher da outbox, cada um em outro terminal:
 
 ```powershell
 bun run consumer
+bun run publisher
 ```
 
 ### Rodando a API em Docker
@@ -79,13 +80,13 @@ bun run consumer
 Depois de gerar `bun.lock`, subir PostgreSQL e aplicar manualmente as migrations acima:
 
 ```powershell
-docker compose -f compose.yml up -d --build api consumer
+docker compose -f compose.yml up -d --build api consumer publisher
 docker compose -f compose.yml ps
-docker compose -f compose.yml logs -f --tail=100 api consumer postgres sqs
+docker compose -f compose.yml logs -f --tail=100 api consumer publisher postgres sqs
 docker compose -f compose.yml down
 ```
 
-Parar a API e o consumidor executados no host antes de iniciar os containers. O serviço `consumer` usa a mesma imagem com `bun dist/consumer.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem em andamento. Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. O painel continua pelo Vite no host nesta entrega. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
+Parar a API, o consumidor e o publisher executados no host antes de iniciar os containers. Os serviços `consumer` e `publisher` usam a mesma imagem com `bun dist/consumer.js` e `bun dist/publisher.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem ou o lote em andamento. O publisher aceita várias instâncias (`--scale publisher=2`). Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. O painel continua pelo Vite no host nesta entrega. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
 
 ## Validação
 
@@ -100,7 +101,7 @@ bun run build
 bun run build:web
 ```
 
-Unidade cobre Money, wallet, ledger, terminalidade, hash e contratos. `build` gera `dist/main.js`; `build:web` gera `dist/web`. O segundo build não é um deploy. O start compilado da API é `bun run start:built`.
+Unidade cobre Money, wallet, ledger, terminalidade, hash, contratos e o publisher com broker simulado (falha parcial de lote, perda de posse, backoff). `build` gera `dist/main.js`, `dist/consumer.js` e `dist/publisher.js`; `build:web` gera `dist/web`. O segundo build não é um deploy. O start compilado da API é `bun run start:built`.
 
 ### Integração com PostgreSQL real
 
@@ -118,7 +119,7 @@ bun run test:concurrency
 docker compose -f compose.yml --profile test logs --tail=100 postgres-test
 ```
 
-Esperar `postgres-test` e `sqs` healthy. As filas de teste (`wager-transactions-test*.fifo`) são separadas das de desenvolvimento; os testes do consumidor criam e removem filas próprias com visibilidade curta. Os testes recusam banco com outro nome/host e não aplicam migrations nem apagam histórico. Geram identidades próprias e incluem API HTTP real, round-trip monetário, replay histórico, conflitos, rejeições, rollback pré-commit, permissões/constraints, paginação e o cliente HTTP do painel contra a API real.
+Esperar `postgres-test` e `sqs` healthy. As filas de teste (`wager-transactions-test*.fifo` e `wager-events-test.fifo`) são separadas das de desenvolvimento; os testes do consumidor e do publisher criam e removem filas próprias. Antes dos cenários do publisher, os eventos pendentes deixados por outras suítes são publicados de verdade numa fila temporária, para que cada cenário observe apenas os próprios eventos. Os testes recusam banco com outro nome/host e não aplicam migrations nem apagam histórico. Geram identidades próprias e incluem API HTTP real, round-trip monetário, replay histórico, conflitos, rejeições, rollback pré-commit, permissões/constraints, paginação e o cliente HTTP do painel contra a API real.
 
 O PostgreSQL de testes usa tmpfs: parar/recriar o container pode perder os dados desse serviço, exigindo novo provisionamento e migrations. O volume de desenvolvimento é separado. Não usar `down -v` como atualização normal.
 
@@ -203,6 +204,28 @@ Envelope (§10 do case): `messageId`, `type: "WagerTransactionRequested"`, `occu
 
 A mensagem permanente só é apagada depois que a DLQ confirma o envio. Um crash depois do commit e antes do ack é resolvido pela inbox na reentrega. No SIGTERM, o consumidor interrompe o long polling, conclui a mensagem em andamento e devolve a visibilidade das que ainda não começaram.
 
+## Eventos e publisher da outbox
+
+Cada operação grava seus eventos na tabela `outbox_messages` no mesmo commit do saldo e do ledger: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference` e `WalletBalanceChanged` (somente quando o saldo muda). Envelope: `eventId`, `eventType`, `version`, `aggregateId` (wallet), `correlationId`, `occurredAt` e `data` com valores monetários em `{ amount, currency }`.
+
+O publisher (`bun run publisher`) envia à fila `wager-events.fifo`, separada da fila de comandos, com `MessageGroupId` igual à wallet, `MessageDeduplicationId` igual ao `eventId` e o atributo `eventType`. A ordem de envio segue a ordem de gravação; um evento reagendado por falha pode chegar depois de eventos mais novos da mesma wallet, então consumidores devem usar `walletVersion` e `occurredAt` para ordenar.
+
+| Etapa | Comportamento |
+| --- | --- |
+| Claim | Até 10 eventos pendentes, em ordem, com `FOR UPDATE SKIP LOCKED`; grava token, lease de 30s e incrementa `attempts` e confirma o claim antes do envio. |
+| Envio | `SendMessageBatch` com timeout de 10s, menor que a lease, fora de qualquer transação. |
+| Confirmação | `published_at` só é gravado se o token ainda for do publisher; caso contrário conta `event_ownership_lost`. |
+| Falha | Libera o claim, grava `last_error` e agenda `next_attempt_at` com backoff de 1s a 5min mais jitter. O evento nunca é descartado; a partir de 10 tentativas o log passa a `outbox_event_stalled`. |
+
+| Falha | Resultado |
+| --- | --- |
+| Crash depois do claim e antes do envio | A lease vence e outro publisher assume o evento. |
+| Crash depois do envio e antes de `published_at` | O evento é reenviado com o mesmo `eventId`; o SQS FIFO descarta a cópia dentro de 5 minutos e, depois disso, o consumidor deduplica pelo `eventId`. |
+| Publisher pausado além da lease | Outro publisher assume e confirma; o antigo não consegue marcar `published_at`. |
+| Timeout com resultado desconhecido | Tratado como falha: o reenvio pode duplicar, sempre com a mesma identidade. |
+
+A garantia é entrega ao menos uma vez com identidade estável; não há exactly-once entre PostgreSQL e SQS. Evento publicado não pode ser reaberto, e o envelope não pode ser alterado nem apagado (proteções no banco).
+
 ## CI
 
 O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualização de PR para `teste` ou `main`, e também por **Actions → CI → Run workflow**.
@@ -212,7 +235,7 @@ O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualiza
 | **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit` com cobertura LCOV, `build`, `build:web`. |
 | **Auditoria de dependências** | `bun audit --audit-level=high`; falha com vulnerabilidade alta ou crítica. |
 | **Imagem Docker e Compose** | Valida o `compose.yml` e constrói a imagem da API. |
-| **Integração com PostgreSQL real** | Sobe `postgres-test` e o emulador SQS do Compose com credenciais geradas na execução, cria as filas de teste, provisiona, aplica as migrations, roda `test:integration` (inclui o consumidor e o SIGTERM do processo real) com cobertura LCOV e `test:concurrency`, reverte e reaplica a última migration. Publica o log como artefato. |
+| **Integração com PostgreSQL real** | Sobe `postgres-test` e o emulador SQS do Compose com credenciais geradas na execução, cria as filas de teste, provisiona, aplica as migrations, roda `test:integration` (inclui consumidor, publisher, crash dos dois e o SIGTERM dos processos reais) com cobertura LCOV e `test:concurrency`, reverte e reaplica a última migration. Publica o log como artefato. |
 | **SonarCloud Quality Gate** | Envia a cobertura de unidade e integração ao SonarCloud e aguarda o Quality Gate (inclui 80% de cobertura no código novo). |
 
 O workflow `CodeQL` (`.github/workflows/codeql.yml`) analisa JavaScript/TypeScript em PRs e em pushes para `teste` e `main`; a análise das branches fixas é a base para identificar alertas novos.
@@ -224,7 +247,7 @@ Migrations só são aplicadas no PostgreSQL descartável criado pelo job; nenhum
 ## Operação e atualização
 
 - Dependências: atualizar manifesto somente com escopo definido, instalar/revisar `bun.lock` e reconstruir a imagem da API.
-- Código backend: executar validações pertinentes e `docker compose -f compose.yml up -d --build api`.
+- Código backend: executar validações pertinentes e `docker compose -f compose.yml up -d --build api consumer publisher`.
 - Código do painel: executar `typecheck:web`, `lint` e `build:web`; Vite acompanha edições em desenvolvimento.
 - Schema: inspecionar a migration e o alvo, executar `db:status`, `db:migrate`, `db:status`, validar e depois atualizar a API. Nunca migrar no startup.
 - Env de container: `docker compose -f compose.yml up -d --force-recreate api`; `restart` não recarrega env do Compose.

@@ -54,6 +54,20 @@ export interface FinancialSession {
   schedulePendingReference(transactionId: string, nextAttemptAt: string, deadlineAt: string): Promise<void>;
 }
 
+export interface ClaimedEvent {
+  readonly envelope: EventEnvelope;
+  /** Inclui a tentativa atual. */
+  readonly attempts: number;
+}
+
+/** Claim durável da outbox: o token comprova a posse até o fim da lease, fora de qualquer transação aberta. */
+export interface OutboxStore {
+  claim(token: string, now: string, leaseUntil: string, limit: number): Promise<ClaimedEvent[]>;
+  /** Devolve os eventos confirmados; os ausentes foram reivindicados por outro publisher depois da lease. */
+  markPublished(token: string, eventIds: readonly string[], at: string): Promise<string[]>;
+  markFailed(token: string, eventId: string, nextAttemptAt: string, error: string): Promise<boolean>;
+}
+
 export interface FinancialUnitOfWork {
   run<T>(work: (session: FinancialSession) => Promise<T>): Promise<T>;
 }
