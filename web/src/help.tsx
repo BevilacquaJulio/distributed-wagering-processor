@@ -139,8 +139,9 @@ export const help = {
       { heading: 'Ao trocar o tipo', body: <p>O painel gera um ID externo e uma chave novos, mantém provedor, rodada, jogo e referência, e
         ajusta o valor só quando LOSS exige <C>0.00</C>.</p> },
       { heading: 'Limites das reversões', body: <ul>
-        <li>Cada operação aceita no máximo um REFUND e no máximo um ROLLBACK. O segundo do mesmo tipo dá <C>REFERENCE_ALREADY_REVERSED</C>.</li>
-        <li>REFUND e ROLLBACK são tipos diferentes, então a mesma BET pode receber um de cada. É uma limitação conhecida e documentada.</li>
+        <li>Cada operação é revertida uma única vez, por REFUND ou por ROLLBACK. A segunda reversão, de qualquer tipo, dá{' '}
+          <C>REFERENCE_ALREADY_REVERSED</C>. Assim uma BET nunca devolve o valor duas vezes.</li>
+        <li>Para desfazer um estorno, envie um ROLLBACK que referencia o REFUND, não a BET.</li>
         <li>Desfazer um crédito (ROLLBACK de WIN ou REFUND) sem saldo dá <C>REVERSAL_INSUFFICIENT_FUNDS</C>.</li>
       </ul> },
     ],
@@ -214,7 +215,7 @@ export const help = {
         <li>Mesmo provedor, mesma wallet, mesmo jogador, mesma moeda e mesma rodada: senão <C>REFERENCE_MISMATCH</C>.</li>
         <li>Tipo compatível: REFUND só aponta para BET; ROLLBACK para BET, WIN ou REFUND; WIN para BET.</li>
         <li>A operação referenciada precisa ter sido processada, senão <C>REFERENCE_NOT_PROCESSED</C>.</li>
-        <li>Nas reversões, mesmo valor e no máximo uma reversão de cada tipo.</li>
+        <li>Nas reversões, mesmo valor, e a referência não pode já ter sido revertida por REFUND ou ROLLBACK.</li>
         <li>Apontar para si mesma: <C>INVALID_REFERENCE</C>.</li>
       </ul> },
       { heading: 'Se a referência ainda não existe', body: <p>A operação é aceita com HTTP 202 e fica <b>aguardando referência</b>, sem

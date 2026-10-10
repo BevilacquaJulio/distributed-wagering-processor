@@ -90,6 +90,7 @@ describe('resolução da referência', () => {
       [reversal('REFUND', '25.00', 'BET-25.00', { walletId: 'other' }), bet, false, 'REFERENCE_MISMATCH'],
       [reversal('REFUND', '20.00', 'BET-25.00'), bet, false, 'REFERENCE_AMOUNT_MISMATCH'],
       [reversal('REFUND', '25.00', 'BET-25.00'), bet, true, 'REFERENCE_ALREADY_REVERSED'],
+      [reversal('ROLLBACK', '25.00', 'BET-25.00'), bet, true, 'REFERENCE_ALREADY_REVERSED'],
     ];
     for (const [transaction, reference, alreadyReversed, code] of cases) {
       expect(transaction.evaluateReference(reference, alreadyReversed)).toEqual({ outcome: 'reject', code });

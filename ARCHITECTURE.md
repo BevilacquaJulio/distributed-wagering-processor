@@ -100,7 +100,7 @@ A prova usa três processos reais da API e uma barreira observada em `pg_stat_ac
 
 Referência a ser válida tem o mesmo provedor, jogador, wallet, moeda e rodada; `gameId` não é comparado. Referência rejeitada resulta em `REFERENCE_NOT_PROCESSED`; incompatível, em `REFERENCE_MISMATCH`; com outro valor, em `REFERENCE_AMOUNT_MISMATCH`; autorreferência, em `INVALID_REFERENCE`. Reverter WIN ou REFUND sem saldo é `REVERSAL_INSUFFICIENT_FUNDS`, código distinto do `INSUFFICIENT_FUNDS` da aposta.
 
-A unicidade de reversão é por referência e tipo, num índice parcial em `wager_references`. Seguindo literalmente o enunciado, uma BET pode receber um REFUND e um ROLLBACK, ou seja, dois créditos. Essa é uma limitação conhecida desta interpretação; não há proteção de estorno líquido único.
+Cada referência é revertida no máximo uma vez, por REFUND ou por ROLLBACK. O enunciado proíbe duas reversões do mesmo tipo; a regra aqui é mais estrita porque REFUND e ROLLBACK de uma mesma BET creditariam o valor duas vezes. A segunda reversão, de qualquer tipo, é rejeitada com `REFERENCE_ALREADY_REVERSED`. A verificação acontece sob o lock da wallet e é garantida no banco por um índice único parcial em `wager_references(reference_transaction_id)` para os kinds de reversão (`Migration202610100004`). Para desfazer um estorno, o caminho é um ROLLBACK que referencia o REFUND, e não um segundo crédito sobre a BET.
 
 ## Referências fora de ordem
 
@@ -183,7 +183,6 @@ A autenticação de provedores não foi implementada. `ProviderIdentityPort` é 
 
 ## Limitações conhecidas
 
-- Uma BET pode receber um REFUND e um ROLLBACK (unicidade por referência e tipo, conforme o enunciado).
 - Entrega de eventos ao menos uma vez, com ordem por wallet de melhor esforço.
 - As leases da outbox e da agenda usam o relógio de cada processo; os hosts precisam de relógio sincronizado, com folga ampla frente aos 30s.
 - Os eventos gerados pelo worker usam o ID da transação como `correlationId`, porque o da requisição original não é persistido.

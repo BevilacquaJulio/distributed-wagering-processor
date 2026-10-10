@@ -208,6 +208,27 @@ describe(`concorrência entre ${INSTANCES} processos da API`, () => {
     await expectConsistent(wallet.id, '100.00', 3, 3);
   });
 
+  test('REFUND e ROLLBACK simultâneos da mesma BET: só um credita', async () => {
+    const wallet = await openWallet('100.00');
+    const original = bet(wallet, '25.00');
+    expect((await submit(0, original, randomUUID())).status).toBe(200);
+    const reversals = (['REFUND', 'ROLLBACK'] as const).map((kind) => ({ ...bet(wallet, '25.00'), kind,
+      referenceExternalTransactionId: original.externalTransactionId }));
+
+    const { waiting, results } = await contend(await lockWallet(orm, wallet.id), 2,
+      () => reversals.map((command, index) => submit(index + 1, command, randomUUID())));
+
+    expect(waiting).toBe(2);
+    expect(results.filter((reply) => reply.status === 200)).toHaveLength(1);
+    const rejected = results.filter((reply) => reply.status === 422);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.body).toMatchObject({ failureCode: 'REFERENCE_ALREADY_REVERSED', balance: { amount: '100.00' } });
+    const state = await financialState(wallet.id);
+    expect(state.ledger).toEqual({ CREDIT: 2, DEBIT: 1 });
+    expect(state.events).toEqual({ WagerTransactionProcessed: 3, WalletBalanceChanged: 3, WagerTransactionRejected: 1 });
+    await expectConsistent(wallet.id, '100.00', 3, 3);
+  });
+
   test('criações simultâneas da mesma wallet resultam em uma única wallet', async () => {
     const playerId = randomUUID();
     const sends = IN_DATABASE_CAPACITY;

@@ -49,7 +49,8 @@ export interface FinancialSession {
   saveAcceptance(result: TransactionResult): Promise<void>;
   enqueue(event: EventEnvelope): Promise<void>;
   findReference(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
-  hasProcessedReversal(referenceTransactionId: string, kind: SubmittedKind): Promise<boolean>;
+  /** Uma referência é revertida no máximo uma vez, por REFUND ou por ROLLBACK. */
+  hasProcessedReversal(referenceTransactionId: string): Promise<boolean>;
   linkReference(transactionId: string, referenceTransactionId: string, kind: SubmittedKind): Promise<void>;
   schedulePendingReference(transactionId: string, nextAttemptAt: string, deadlineAt: string): Promise<void>;
   /** Trava a agenda sob o lock da wallet; null quando o claim deixou de ser deste worker ou já foi resolvida. */

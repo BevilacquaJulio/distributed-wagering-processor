@@ -375,7 +375,7 @@ Erros de transporte seguem `{ "error": { "code", "message", "requestId" } }`, se
 | `REFERENCE_NOT_PROCESSED` | A referência existe, mas foi rejeitada. | Desistir da reversão. |
 | `REFERENCE_MISMATCH` | Tipo, jogador, wallet, moeda ou rodada incompatíveis. | Corrigir a referência. |
 | `REFERENCE_AMOUNT_MISMATCH` | Valor da reversão diferente do original. | Enviar o valor integral. |
-| `REFERENCE_ALREADY_REVERSED` | Já existe reversão processada do mesmo tipo. | Nada a fazer; o efeito já foi aplicado. |
+| `REFERENCE_ALREADY_REVERSED` | A referência já foi revertida, por REFUND ou por ROLLBACK. | Nada a fazer; o efeito já foi aplicado. |
 | `REFERENCE_EXPIRED` | A referência não chegou em 24h desde o aceite. | Reenviar a operação original, se ainda for devida. |
 
 </details>
@@ -475,6 +475,7 @@ bun run test:concurrency
 | Wallet bloqueada e outra wallet | A segunda é processada enquanto a primeira continua bloqueada. |
 | Trinta criações da mesma wallet | Uma 201 e 29 respostas 409; uma única wallet no banco. |
 | Dois REFUNDs da mesma BET | Um processado e outro `REFERENCE_ALREADY_REVERSED`. |
+| REFUND e ROLLBACK da mesma BET | Só um credita; o outro é `REFERENCE_ALREADY_REVERSED`. |
 
 Sem o `FOR UPDATE` na wallet, os cenários 80/80 e vinte débitos falham por lost update, o que mostra que a suíte detecta a ausência do lock.
 
@@ -569,7 +570,6 @@ O `CodeQL` analisa TypeScript em PRs e nas branches `teste` e `main`. A auditori
 ## Limitações
 
 - Não há autenticação de provedores. `ProviderIdentityPort` é o ponto de extensão, com o desenho de IdP descrito no ARCHITECTURE.md; não exponha a aplicação fora de ambiente controlado.
-- Uma BET pode receber um REFUND e um ROLLBACK (unicidade por referência e tipo, como no enunciado).
 - Entrega de eventos ao menos uma vez, com ordem por wallet de melhor esforço.
 - Só BRL; sem conversão cambial nem limitação de taxa.
 - Sem teste de carga (`test:load`) nem dashboard; as métricas ficam prontas para um coletor Prometheus.
