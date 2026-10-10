@@ -16,7 +16,7 @@ const transactionSchema = z.object({
   id: z.string().uuid(), kind: z.string(), walletId: z.string().uuid(), money, status: z.string(),
   failureCode: z.string().nullable(), createdAt: z.string(), processedAt: z.string().nullable(),
   referenceTransactionId: z.string().nullable(),
-  command: z.object({ providerId: z.string(), externalTransactionId: z.string(), roundId: z.string(),
+  command: z.object({ providerId: z.string(), externalTransactionId: z.string(), roundId: z.string(), gameId: z.string().optional(),
     referenceExternalTransactionId: z.string().optional() }).nullable(),
   result: resultSchema.nullable(),
 });
@@ -31,6 +31,11 @@ export type Kind = typeof kinds[number];
 export const referencePolicy: Record<Kind, 'required' | 'optional' | 'forbidden'> = {
   BET: 'forbidden', LOSS: 'forbidden', WIN: 'optional', REFUND: 'required', ROLLBACK: 'required',
 };
+/** Tipos que cada operação pode referenciar; o servidor decide, isto só orienta as sugestões do painel. */
+export const referenceableKinds: Record<Kind, readonly Kind[]> = {
+  BET: [], LOSS: [], WIN: ['BET'], REFUND: ['BET'], ROLLBACK: ['BET', 'WIN', 'REFUND'],
+};
+export const isReversal = (kind: Kind) => kind === 'REFUND' || kind === 'ROLLBACK';
 export const amountInput = z.string().regex(/^(0|[1-9]\d{0,17})\.\d{2}$/, 'Use um valor como 25.00, com duas casas decimais.');
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const identifierMessage = 'Use letras, números, ponto, hífen, dois-pontos ou sublinhado.';
@@ -95,7 +100,8 @@ const messages: Record<string, string> = {
   REFERENCE_EXPIRED: 'A operação referenciada não chegou dentro do prazo.',
   IDEMPOTENCY_CONFLICT: 'Esta chave já foi usada com outros dados. Confira a operação ou gere uma nova identidade.',
   EXTERNAL_ID_CONFLICT: 'Este ID externo já está associado a outra chave.', WALLET_NOT_FOUND: 'Wallet não encontrada.',
-  TRANSACTION_NOT_FOUND: 'Transação não encontrada.',
+  TRANSACTION_NOT_FOUND: 'Transação não encontrada. Confira o provedor e se o ID é o externo (ou o interno, no outro modo de busca).',
+  RESOURCE_NOT_FOUND: 'Endereço não encontrado na API.', MISSING_IDEMPOTENCY_KEY: 'A chave de idempotência é obrigatória.',
   WALLET_ALREADY_EXISTS: 'O jogador já possui uma wallet nessa moeda.', INVALID_PAYLOAD: 'Confira os campos enviados.',
   INFRASTRUCTURE_UNAVAILABLE: 'Serviço indisponível. Atualize os dados ou reenvie a mesma operação com a mesma chave.',
 };
