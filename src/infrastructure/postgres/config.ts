@@ -5,11 +5,13 @@ import { Migration202610090001 } from './migrations/Migration202610090001';
 import { Migration202610090002 } from './migrations/Migration202610090002';
 import { Migration202610100001 } from './migrations/Migration202610100001';
 import { Migration202610100002 } from './migrations/Migration202610100002';
+import { Migration202610100003 } from './migrations/Migration202610100003';
 
 export const DATABASE_POOL_MAX = 10;
 /** Versão gravada em schema_version pela última migration; readiness e testes recusam schema diferente. */
-export const SCHEMA_VERSION = 4;
-export const MIGRATIONS = [Migration202610090001, Migration202610090002, Migration202610100001, Migration202610100002];
+export const SCHEMA_VERSION = 5;
+export const MIGRATIONS = [Migration202610090001, Migration202610090002, Migration202610100001, Migration202610100002,
+  Migration202610100003];
 
 export function databaseConfig(clientUrl: string) {
   return defineConfig({

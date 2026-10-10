@@ -113,6 +113,14 @@ describe('transições', () => {
     expect(() => refund.markPendingReference()).toThrow();
   });
 
+  test('pendência expirada termina rejeitada e não volta a esperar', () => {
+    const refund = reversal('REFUND', '25.00', 'BET-25.00');
+    refund.markPendingReference();
+    refund.reject('REFERENCE_EXPIRED', at);
+    expect(refund.toState()).toMatchObject({ status: 'REJECTED', failureCode: 'REFERENCE_EXPIRED', processedAt: at });
+    expect(() => refund.markProcessed(at, 'BET-id')).toThrow('Terminal transaction');
+  });
+
   test('referência é obrigatória em reversões e proibida em BET e LOSS', () => {
     expect(() => WagerTransaction.submit('r', command('REFUND', '25.00'), at)).toThrow('requires a reference');
     expect(() => WagerTransaction.submit('b', command('BET', '25.00', { referenceExternalTransactionId: 'x' }), at)).toThrow('does not accept');

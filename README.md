@@ -1,10 +1,10 @@
 # Distributed Wagering Processor
 
-Processador financeiro Jungle Gaming: abertura de wallet, BET, WIN, LOSS, REFUND e ROLLBACK, ledger, outbox persistida, replay, referências fora de ordem persistidas e painel local de testes. Dinheiro é string decimal nos contratos e bigint em centavos no domínio.
+Processador financeiro Jungle Gaming: abertura de wallet, BET, WIN, LOSS, REFUND e ROLLBACK, ledger, outbox publicada, replay, referências fora de ordem resolvidas por worker e painel local de testes. Dinheiro é string decimal nos contratos e bigint em centavos no domínio.
 
 **Estado:** dependências instaladas com Bun 1.4.2 e `bun.lock` versionado. Typecheck (API e painel), lint, testes de unidade, builds, integração com PostgreSQL real (provisionamento e migration em banco descartável) e conferência manual do painel executados com sucesso. Build Docker da API ainda sem registro.
 
-A concorrência entre três processos da API está comprovada por testes reais. Comandos também chegam pela fila SQS `wager-transactions.fifo`, consumida com inbox persistente e ack depois do commit pelo mesmo caso de uso da API. Os eventos gravados na outbox no mesmo commit são entregues à fila `wager-events.fifo` por um processo publisher, que pode rodar em várias instâncias. Uma operação que chega antes da referência fica `PENDING_REFERENCE` com aceite, agenda e evento duráveis; o worker que reavalia pendências pertence à próxima parte da entrega. O painel oferece wallet, todas as operações, consulta de transação, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
+A concorrência entre três processos da API está comprovada por testes reais. Comandos também chegam pela fila SQS `wager-transactions.fifo`, consumida com inbox persistente e ack depois do commit pelo mesmo caso de uso da API. Os eventos gravados na outbox no mesmo commit são entregues à fila `wager-events.fifo` por um processo publisher, que pode rodar em várias instâncias. Uma operação que chega antes da referência fica `PENDING_REFERENCE` com aceite, agenda e evento duráveis; um processo worker a reavalia com backoff e a processa quando a referência chega, ou a rejeita com `REFERENCE_EXPIRED` após 24 horas. O painel oferece wallet, todas as operações, consulta de transação, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
 
 ## Como executar o projeto
 
@@ -68,11 +68,12 @@ Readiness responde 200 somente com o schema na versão esperada e a fila de coma
 
 `sqs:provision` cria manualmente `wager-transactions.fifo` (visibilidade de 30s, redrive para a DLQ após 5 recebimentos), `wager-transactions-dlq.fifo` (retenção de 14 dias) e a fila de eventos `wager-events.fifo` (retenção de 14 dias); `sqs:status` mostra os atributos. O comando é idempotente para os mesmos atributos.
 
-Consumidor da fila e publisher da outbox, cada um em outro terminal:
+Consumidor da fila, publisher da outbox e worker de referências, cada um em outro terminal:
 
 ```powershell
 bun run consumer
 bun run publisher
+bun run reference-worker
 ```
 
 ### Rodando a API em Docker
@@ -80,13 +81,13 @@ bun run publisher
 Depois de gerar `bun.lock`, subir PostgreSQL e aplicar manualmente as migrations acima:
 
 ```powershell
-docker compose -f compose.yml up -d --build api consumer publisher
+docker compose -f compose.yml up -d --build api consumer publisher reference-worker
 docker compose -f compose.yml ps
-docker compose -f compose.yml logs -f --tail=100 api consumer publisher postgres sqs
+docker compose -f compose.yml logs -f --tail=100 api consumer publisher reference-worker postgres sqs
 docker compose -f compose.yml down
 ```
 
-Parar a API, o consumidor e o publisher executados no host antes de iniciar os containers. Os serviços `consumer` e `publisher` usam a mesma imagem com `bun dist/consumer.js` e `bun dist/publisher.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem ou o lote em andamento. O publisher aceita várias instâncias (`--scale publisher=2`). Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. O painel continua pelo Vite no host nesta entrega. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
+Parar a API, o consumidor, o publisher e o worker executados no host antes de iniciar os containers. Os serviços `consumer`, `publisher` e `reference-worker` usam a mesma imagem com `bun dist/consumer.js`, `bun dist/publisher.js` e `bun dist/reference-worker.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem, o lote ou a resolução em andamento. Publisher e worker aceitam várias instâncias (`--scale publisher=2`, `--scale reference-worker=2`); o worker só usa PostgreSQL. Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. O painel continua pelo Vite no host nesta entrega. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
 
 ## Validação
 
@@ -101,7 +102,7 @@ bun run build
 bun run build:web
 ```
 
-Unidade cobre Money, wallet, ledger, terminalidade, hash, contratos e o publisher com broker simulado (falha parcial de lote, perda de posse, backoff). `build` gera `dist/main.js`, `dist/consumer.js` e `dist/publisher.js`; `build:web` gera `dist/web`. O segundo build não é um deploy. O start compilado da API é `bun run start:built`.
+Unidade cobre Money, wallet, ledger, terminalidade, hash, contratos e o publisher com broker simulado (falha parcial de lote, perda de posse, backoff) e o worker de referências (falha isolada por item, backoff). `build` gera `dist/main.js`, `dist/consumer.js`, `dist/publisher.js` e `dist/reference-worker.js`; `build:web` gera `dist/web`. O segundo build não é um deploy. O start compilado da API é `bun run start:built`.
 
 ### Integração com PostgreSQL real
 
@@ -119,7 +120,7 @@ bun run test:concurrency
 docker compose -f compose.yml --profile test logs --tail=100 postgres-test
 ```
 
-Esperar `postgres-test` e `sqs` healthy. As filas de teste (`wager-transactions-test*.fifo` e `wager-events-test.fifo`) são separadas das de desenvolvimento; os testes do consumidor e do publisher criam e removem filas próprias. Antes dos cenários do publisher, os eventos pendentes deixados por outras suítes são publicados de verdade numa fila temporária, para que cada cenário observe apenas os próprios eventos. Os testes recusam banco com outro nome/host e não aplicam migrations nem apagam histórico. Geram identidades próprias e incluem API HTTP real, round-trip monetário, replay histórico, conflitos, rejeições, rollback pré-commit, permissões/constraints, paginação e o cliente HTTP do painel contra a API real.
+Esperar `postgres-test` e `sqs` healthy. As filas de teste (`wager-transactions-test*.fifo` e `wager-events-test.fifo`) são separadas das de desenvolvimento; os testes do consumidor e do publisher criam e removem filas próprias. Antes dos cenários do publisher, os eventos pendentes deixados por outras suítes são publicados de verdade numa fila temporária, para que cada cenário observe apenas os próprios eventos; do mesmo modo, a suíte do worker vence as pendências antigas com um relógio adiantado antes dos seus cenários. Os testes recusam banco com outro nome/host e não aplicam migrations nem apagam histórico. Geram identidades próprias e incluem API HTTP real, round-trip monetário, replay histórico, conflitos, rejeições, rollback pré-commit, permissões/constraints, paginação e o cliente HTTP do painel contra a API real.
 
 O PostgreSQL de testes usa tmpfs: parar/recriar o container pode perder os dados desse serviço, exigindo novo provisionamento e migrations. O volume de desenvolvimento é separado. Não usar `down -v` como atualização normal.
 
@@ -151,7 +152,7 @@ A reversão da migration apaga o histórico e não faz parte do procedimento nor
 5. Enviar valor acima do saldo; confirmar rejeição auditável e ausência de débito.
 6. Usar **Conferir saldo** e verificar diferença `0.00`.
 7. Trocar o tipo para **REFUND**, usar **Referenciar o último envio** e confirmar o crédito integral; repetir com nova operação e ver `REFERENCE_ALREADY_REVERSED`.
-8. Enviar um **ROLLBACK** com um ID externo que ainda não existe; confirmar a resposta 202 `PENDING_REFERENCE` e consultar a transação em **Consultar transação**.
+8. Enviar um **ROLLBACK** com um ID externo que ainda não existe; confirmar a resposta 202 `PENDING_REFERENCE` e consultar a transação em **Consultar transação**. Com `bun run reference-worker` ativo, enviar depois a operação referenciada e consultar de novo: a pendência passa a `PROCESSED`.
 9. Enviar **LOSS** com `0.00` e confirmar que saldo e versão não mudam.
 10. Conferir navegação por teclado, foco, mensagens de validação, estados de erro/indisponibilidade e layout móvel. Essa inspeção visual ainda está pendente.
 
@@ -187,7 +188,7 @@ HTTP: 201 criação, 200 processamento/consulta, 202 aceite com referência aind
 | `REFERENCE_MISMATCH` | Tipo, jogador, wallet, moeda ou rodada incompatíveis. | Corrigir a referência. |
 | `REFERENCE_AMOUNT_MISMATCH` | Valor da reversão diferente do original. | Enviar o valor integral. |
 | `REFERENCE_ALREADY_REVERSED` | Já existe reversão processada do mesmo tipo para a referência. | Nada a fazer; o efeito já foi aplicado. |
-| `REFERENCE_EXPIRED` | Referência não chegou dentro do prazo (aplicado pelo worker da próxima entrega). | Reenviar a operação original, se ainda for devida. |
+| `REFERENCE_EXPIRED` | Referência não chegou em 24 horas desde o aceite (aplicado pelo worker de referências). | Reenviar a operação original, se ainda for devida. |
 
 ## Fila de comandos
 
@@ -203,6 +204,21 @@ Envelope (§10 do case): `messageId`, `type: "WagerTransactionRequested"`, `occu
 | Falha transitória (banco indisponível, deadlock esgotado, erro inesperado) | Sem ack; visibilidade com backoff exponencial (2s a 60s). Ao exceder 5 recebimentos, o redrive do broker move para a DLQ. |
 
 A mensagem permanente só é apagada depois que a DLQ confirma o envio. Um crash depois do commit e antes do ack é resolvido pela inbox na reentrega. No SIGTERM, o consumidor interrompe o long polling, conclui a mensagem em andamento e devolve a visibilidade das que ainda não começaram.
+
+## Referências fora de ordem
+
+WIN, REFUND ou ROLLBACK cuja referência ainda não existe (ou ainda está pendente) são aceitos com 202 `PENDING_REFERENCE`, aceite persistido, agenda em `pending_references` e o evento `WagerTransactionPendingReference`. O processo `bun run reference-worker` reavalia as pendências vencidas com o mesmo caso de uso da API, sob o lock da wallet.
+
+| Situação na reavaliação | Resultado |
+| --- | --- |
+| Referência processada e compatível | Operação `PROCESSED`, com saldo, ledger, vínculo, resultado terminal e eventos na mesma transação. |
+| Referência rejeitada, incompatível ou com outro valor | `REJECTED` com o `failureCode` da regra (`REFERENCE_NOT_PROCESSED`, `REFERENCE_MISMATCH`, ...). |
+| Referência ainda ausente ou pendente, dentro do prazo | Reagenda com espera de 2s, 4s, 8s... até 5min, mais jitter, sem passar do prazo. Nenhum evento novo. |
+| Referência ainda ausente após 24h do aceite | `REJECTED` com `REFERENCE_EXPIRED` e evento `WagerTransactionRejected`. |
+
+Quando uma operação fica terminal, as pendências que a referenciam são antecipadas na mesma transação, sem esperar o backoff; uma cadeia (ROLLBACK de um REFUND pendente) se resolve em sequência. O replay de uma pendência devolve o aceite 202 até a resolução e, depois, o resultado terminal com o saldo observado nela. Os eventos da resolução usam o ID da transação como `correlationId`.
+
+Coordenação: cada worker reivindica até 10 pendências com `FOR UPDATE SKIP LOCKED`, token e lease de 30s. A resolução trava a wallet e depois a agenda (a mesma ordem do envio que antecipa dependentes) e só altera algo se o token ainda for dele. Crash antes do commit desfaz tudo e a pendência volta quando a lease vence; falha de infraestrutura nunca vira `FAILED`. Agenda resolvida é definitiva e só pode ser resolvida junto da transação terminal (proteção no banco).
 
 ## Eventos e publisher da outbox
 
@@ -235,7 +251,7 @@ O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualiza
 | **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit` com cobertura LCOV, `build`, `build:web`. |
 | **Auditoria de dependências** | `bun audit --audit-level=high`; falha com vulnerabilidade alta ou crítica. |
 | **Imagem Docker e Compose** | Valida o `compose.yml` e constrói a imagem da API. |
-| **Integração com PostgreSQL real** | Sobe `postgres-test` e o emulador SQS do Compose com credenciais geradas na execução, cria as filas de teste, provisiona, aplica as migrations, roda `test:integration` (inclui consumidor, publisher, crash dos dois e o SIGTERM dos processos reais) com cobertura LCOV e `test:concurrency`, reverte e reaplica a última migration. Publica o log como artefato. |
+| **Integração com PostgreSQL real** | Sobe `postgres-test` e o emulador SQS do Compose com credenciais geradas na execução, cria as filas de teste, provisiona, aplica as migrations, roda `test:integration` (inclui consumidor, publisher, worker de referências, crash dos três e o SIGTERM dos processos reais) com cobertura LCOV e `test:concurrency`, reverte e reaplica a última migration. Publica o log como artefato. |
 | **SonarCloud Quality Gate** | Envia a cobertura de unidade e integração ao SonarCloud e aguarda o Quality Gate (inclui 80% de cobertura no código novo). |
 
 O workflow `CodeQL` (`.github/workflows/codeql.yml`) analisa JavaScript/TypeScript em PRs e em pushes para `teste` e `main`; a análise das branches fixas é a base para identificar alertas novos.
@@ -247,7 +263,7 @@ Migrations só são aplicadas no PostgreSQL descartável criado pelo job; nenhum
 ## Operação e atualização
 
 - Dependências: atualizar manifesto somente com escopo definido, instalar/revisar `bun.lock` e reconstruir a imagem da API.
-- Código backend: executar validações pertinentes e `docker compose -f compose.yml up -d --build api consumer publisher`.
+- Código backend: executar validações pertinentes e `docker compose -f compose.yml up -d --build api consumer publisher reference-worker`.
 - Código do painel: executar `typecheck:web`, `lint` e `build:web`; Vite acompanha edições em desenvolvimento.
 - Schema: inspecionar a migration e o alvo, executar `db:status`, `db:migrate`, `db:status`, validar e depois atualizar a API. Nunca migrar no startup.
 - Env de container: `docker compose -f compose.yml up -d --force-recreate api`; `restart` não recarrega env do Compose.
