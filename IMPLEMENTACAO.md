@@ -2,7 +2,7 @@
 
 ## Escopo e evidência
 
-Código e testes estão escritos, sem execução comprovada. O runtime proposto é Bun 1.4.2, com NestJS 11.2.5, MikroORM 6.6.0, TypeScript 5.9.3 e PostgreSQL 17.6. As versões foram identificadas em fontes oficiais/registro; a combinação precisa passar pela primeira instalação e suíte real. O lockfile ainda depende dessa instalação.
+Código e testes estão escritos, sem execução comprovada. O runtime proposto é Bun 1.4.2, com NestJS 11.2.6, MikroORM 6.6.16, TypeScript 5.9.3 e PostgreSQL 17.6. As versões foram identificadas em fontes oficiais/registro; a combinação precisa passar pela primeira instalação e suíte real. O lockfile ainda depende dessa instalação.
 
 ## Dinheiro, domínio e persistência
 
@@ -21,6 +21,10 @@ Uma unidade `EntityManager.transactional()` com READ COMMITTED compartilha o man
 Depois da reserva, a wallet é bloqueada e relida. Wallets distintas não compartilham lock global. Deadlock/serialization/lock timeout têm até três tentativas totais, com contexto novo. Conexão perdida em commit retorna indisponibilidade quando reconhecida; o cliente reenvia a mesma identidade para descobrir o resultado persistido. Não há troca automática de chave.
 
 Antes do commit, falha desfaz toda a unidade. Depois do commit, replay lê o snapshot original e não recalcula saldo nem reemite eventos. `beforeCommit` é uma dependência de teste injetável no adaptador, sem rota/env pública de crash.
+
+### Prova entre processos
+
+`tests/concurrency` sobe três processos da API contra o mesmo PostgreSQL e sincroniza a disputa por uma barreira observada no banco: uma transação de teste segura a wallet (ou uma wallet provisória do mesmo jogador) e só é liberada quando todas as transações das instâncias aparecem esperando lock em `pg_stat_activity`. Os cenários cobrem 50 envios da mesma BET, 80/80 contra 100, vinte débitos de 10.00 contra 100, isolamento entre wallets e criação simultânea da mesma wallet. Sem o `PESSIMISTIC_WRITE` na leitura da wallet, os cenários 80/80 e vinte débitos falham com lost update, o que confirma que a suíte detecta a ausência do lock.
 
 ## Proteções no schema
 
@@ -55,7 +59,7 @@ Não há migrations automáticas. `db:status` consulta catálogo/tabela existent
 ## Fontes verificadas
 
 - [MikroORM 6.6: transações](https://mikro-orm.io/docs/6.6/transactions) e [EntitySchema](https://mikro-orm.io/docs/6.6/defining-entities).
-- [MikroORM 6.6: migrations](https://mikro-orm.io/docs/6.6/migrations) e [implementação do migrator](https://github.com/mikro-orm/mikro-orm/blob/v6.6.0/packages/migrations/src/Migrator.ts).
-- [Bun 1.4.2](https://bun.com/blog/bun-v1.4.2), [NestJS 11.2.5](https://github.com/nestjs/nest/releases/tag/v11.2.5) e [PostgreSQL 17.6](https://www.postgresql.org/docs/17/release-17-6.html).
+- [MikroORM 6.6: migrations](https://mikro-orm.io/docs/6.6/migrations) e [implementação do migrator](https://github.com/mikro-orm/mikro-orm/blob/v6.6.16/packages/migrations/src/Migrator.ts).
+- [Bun 1.4.2](https://bun.com/blog/bun-v1.4.2), [NestJS 11.2.6](https://github.com/nestjs/nest/releases/tag/v11.2.6) e [PostgreSQL 17.6](https://www.postgresql.org/docs/17/release-17-6.html).
 
 O case completo ainda exige as demais operações, mensageria, recuperação, gates e evidências. A documentação final também deverá conciliar o nome público de arquitetura exigido pelo enunciado com a regra local que mantém `ARCHITECTURE.md` privado.
