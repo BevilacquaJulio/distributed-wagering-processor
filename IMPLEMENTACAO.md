@@ -63,9 +63,21 @@ A classificação de falhas e o tratamento de cada caso estão no README. Retry 
 
 ## Eventos e diagnóstico
 
-Processed, Rejected, PendingReference e BalanceChanged são classes concretas, com envelope versionado e MoneyProps serializável. Eventos são persistidos no mesmo commit. Nenhum publisher/SQS está implementado; eventos permanecem pendentes. Persistência de outbox não equivale a entrega comprovada.
+Processed, Rejected, PendingReference e BalanceChanged são classes concretas, com envelope versionado e MoneyProps serializável. Eventos são persistidos no mesmo commit.
 
-Logs JSON contêm correlação e identidades do resultado, sem payload/valor financeiro, SQL ou credenciais. `/metrics` expõe contadores locais de resultados, replay, conflito, indisponibilidade e divergência. Contagem é observacional, não ledger auditável. Métricas de workers, retries, locks, lag e histogramas completos ainda serão implementadas.
+## Publisher da outbox
+
+`src/publisher.ts` é um processo próprio que entrega a outbox à fila `wager-events.fifo`, separada da fila de comandos para que um evento nunca seja consumido como comando. Não foi acrescentado SNS: o case não nomeia o destino e uma fila FIFO por ambiente atende ao contrato com a infraestrutura que já existe.
+
+Estratégia escolhida: claim durável com lease. Um único comando em autocommit seleciona até 10 eventos pendentes por `position` com `FOR UPDATE SKIP LOCKED` e grava `claim_token`, `lease_until` e `attempts + 1`. Nenhum lock de linha fica aberto durante o envio. A confirmação grava `published_at` somente `where claim_token = token`; um publisher que perdeu a posse não consegue concluir o claim de outro. A alternativa de manter a transação aberta com o lock durante o envio foi descartada: prenderia conexões do pool pelo tempo de rede do SQS e não sobrevive a um crash melhor do que a lease.
+
+A migration `Migration202610100002` acrescenta `position` (identidade gerada na inserção; como os eventos de uma wallet são gravados sob o lock dela, a posição segue a ordem de commit por wallet), `last_error`, a coerência entre token e lease, o índice parcial dos pendentes por posição, o trigger que torna definitivo o evento publicado e impede `attempts` de diminuir, e o `UPDATE` do papel runtime restrito às colunas do publisher.
+
+O envio usa `SendMessageBatch` com `MessageGroupId` igual à wallet e `MessageDeduplicationId` igual ao `eventId`. O timeout do envio (10s) é menor que a lease (30s), então em operação normal nenhum outro publisher assume um evento ainda em envio. Falha libera o claim, registra o código do erro e agenda a próxima tentativa com backoff exponencial de 1s a 5min mais jitter; não há limite que descarte o evento. Lease e backoff usam o relógio do processo: os hosts precisam de relógio sincronizado, com folga ampla frente aos 30s da lease.
+
+Limites: entrega ao menos uma vez, não exactly-once. Um crash depois do envio e antes de `published_at`, ou um timeout com resultado desconhecido, reenvia o mesmo `eventId`; o FIFO descarta a cópia dentro da janela de deduplicação de 5 minutos e o consumidor deduplica depois dela. A ordem por wallet é de melhor esforço: um evento reagendado pode chegar depois de eventos mais novos.
+
+Logs JSON contêm correlação e identidades do resultado, sem payload/valor financeiro, SQL ou credenciais. `/metrics` expõe contadores locais de resultados, replay, conflito, indisponibilidade e divergência. Contagem é observacional, não ledger auditável. O publisher registra `event_published`, `event_publish_failed` e `event_ownership_lost` e loga o atraso de cada evento entre `occurredAt` e a confirmação; o processo dele não expõe HTTP. Métricas de locks, histogramas e a exposição das métricas dos workers ainda serão implementadas.
 
 Reconciliação usa REPEATABLE READ. Liveness verifica processo; readiness consulta schema/PostgreSQL e declara escopo parcial HTTP/BET. Timeouts de conexão/consulta/lock são finitos. A suite de shutdown/crash distribuído continua pendente.
 

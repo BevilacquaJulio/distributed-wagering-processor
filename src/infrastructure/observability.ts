@@ -14,7 +14,8 @@ export class JsonLogger implements LoggerService {
 }
 
 const METRIC_NAMES = ['processed', 'rejected', 'pending_reference', 'replay', 'conflict', 'reconciliation_divergence',
-  'infrastructure_failure', 'message_processed', 'message_duplicate', 'message_retry', 'message_dead_letter'] as const;
+  'infrastructure_failure', 'message_processed', 'message_duplicate', 'message_retry', 'message_dead_letter',
+  'event_published', 'event_publish_failed', 'event_ownership_lost'] as const;
 export type MetricName = typeof METRIC_NAMES[number];
 
 export class Metrics {
