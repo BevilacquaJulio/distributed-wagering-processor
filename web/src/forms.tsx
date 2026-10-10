@@ -24,10 +24,14 @@ const statusTitles: Record<WagerResult['status'], string> = {
   PROCESSED: 'Operação processada', REJECTED: 'Operação rejeitada', PENDING: 'Operação pendente', PENDING_REFERENCE: 'Aguardando a operação referenciada',
 };
 
-function newOperation(kind: Kind = 'BET', reference = ''): OperationInput {
+function newIdentity(): Pick<OperationInput, 'externalTransactionId' | 'idempotencyKey'> {
   const id = crypto.randomUUID();
-  return { kind, providerId: 'provider-a', externalTransactionId: id, idempotencyKey: `provider-a:${id}`,
-    roundId: 'round-1', gameId: 'game-1', amount: kind === 'LOSS' ? '0.00' : '25.00', reference };
+  return { externalTransactionId: id, idempotencyKey: `provider-a:${id}` };
+}
+
+function newOperation(kind: Kind = 'BET', reference = ''): OperationInput {
+  return { kind, providerId: 'provider-a', ...newIdentity(), roundId: 'round-1', gameId: 'game-1',
+    amount: kind === 'LOSS' ? '0.00' : '25.00', reference };
 }
 
 function ResultCard({ result }: Readonly<{ result: WagerResult }>) {
@@ -64,6 +68,10 @@ export function OperationForm({ wallet }: Readonly<{ wallet: Wallet }>) {
     <form onSubmit={form.handleSubmit((values) => {
       const submission = structuredClone({ wallet, fields: values });
       setLast(submission); mutation.mutate(submission);
+      // O próximo envio de negócio usa identidade nova; repetir a anterior é só pelo reenvio controlado.
+      const identity = newIdentity();
+      form.setValue('externalTransactionId', identity.externalTransactionId);
+      form.setValue('idempotencyKey', identity.idempotencyKey);
     })}>
       <fieldset disabled={mutation.isPending} className="grid gap-4 sm:grid-cols-2">
         <label className="sm:col-span-2">Tipo<select {...form.register('kind', { onChange: (event) => {
@@ -79,9 +87,11 @@ export function OperationForm({ wallet }: Readonly<{ wallet: Wallet }>) {
           {last && policy !== 'forbidden' && <button type="button" onClick={() => form.setValue('reference', last.fields.externalTransactionId, { shouldValidate: true })}>
             Referenciar o último envio</button>}
         </div>
+        <p className="hint sm:col-span-2">Cada envio usa um ID externo e uma chave novos. Para testar replay, use o reenvio controlado; para testar conflito, cole a chave do último envio e altere os dados.</p>
       </fieldset>
     </form>
-    {last && <div className="replay-strip"><div><strong>Reenvio controlado</strong><p>Repete os dados e a chave do último envio ({last.fields.kind}).</p></div>
+    {last && <div className="replay-strip"><div><strong>Reenvio controlado</strong><p>Repete os dados e a chave do último envio ({last.fields.kind}).</p>
+      <p className="mono break-all">ID externo: {last.fields.externalTransactionId}</p></div>
       <button type="button" disabled={mutation.isPending} onClick={() => mutation.mutate(last)}>Reenviar mesma operação</button></div>}
     {mutation.isError && <p role="alert" className="error mt-4">{errorMessage(mutation.error)}</p>}
     {mutation.data && <ResultCard result={mutation.data} />}
