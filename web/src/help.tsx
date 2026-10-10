@@ -380,6 +380,30 @@ export const help = {
         <C>WALLET_NOT_FOUND</C>.</p> },
     ],
   },
+  requests: {
+    title: 'Últimas requisições',
+    summary: 'Cada ação do painel vira uma requisição HTTP para a API. Esta aba mostra exatamente o que foi enviado, para você repetir no Postman.',
+    sections: [
+      { heading: 'O que entra na lista', body: <ul>
+        <li>Criação de wallet, envios e reenvios de operação, consultas de transação e conferência de saldo.</li>
+        <li>Também as que voltaram com erro (400, 409, 422, 503): são as mais úteis para entender uma rejeição.</li>
+        <li>As 20 mais recentes, só nesta aba do navegador. Recarregar a página apaga a lista, não os dados gravados.</li>
+      </ul> },
+      { heading: 'Como usar no Postman', body: <ol>
+        <li>Crie um request novo e copie método e URL.</li>
+        <li>Na aba Headers, cadastre cada header da tabela.</li>
+        <li>Na aba Body, escolha raw e JSON e cole o body.</li>
+        <li>Envie e compare com a resposta que o painel recebeu.</li>
+      </ol> },
+      { heading: 'Atalho', body: <p>O bloco cURL importa tudo de uma vez: no Postman, <b>Import</b> e cole o texto. Funciona também no Insomnia
+        e no terminal.</p> },
+      { heading: 'Replay ou operação nova', body: <p>Repetir exatamente um envio de operação usa a mesma chave de idempotência, então a API
+        devolve o resultado gravado, sem nova movimentação. O passo "Para enviar de novo" mostra o script de Pre-request que gera um ID externo
+        novo a cada Send.</p> },
+      { heading: 'Duas URLs', body: <p>A URL "pelo painel" passa pelo proxy <C>/api</C> do painel. A "direta" chama a API na porta 3000, como
+        no README. As duas chegam ao mesmo lugar.</p> },
+    ],
+  },
 } satisfies Record<string, HelpEntry>;
 
 export type HelpTopic = keyof typeof help;

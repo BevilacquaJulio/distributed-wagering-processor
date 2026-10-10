@@ -6,11 +6,12 @@ import { OperationForm } from './forms';
 import { type SentOperation, SessionHistory } from './history';
 import { Ledger } from './ledger';
 import { type LookupRequest, TransactionLookup } from './lookup';
-import { InfoButton, TabPanel, Tabs } from './ui';
+import { useRequestLog } from './request-log';
+import { RequestsPanel } from './requests';
+import { InfoButton, type TabItem, TabPanel, Tabs } from './ui';
 import { readRecentWallets, rememberWallet, WalletSetup, WalletSummary } from './wallet';
 
-type Tab = 'operate' | 'consult' | 'ledger';
-const tabs = [{ id: 'operate', label: 'Operar' }, { id: 'consult', label: 'Consultar' }, { id: 'ledger', label: 'Extrato' }] as const;
+type Tab = 'operate' | 'consult' | 'ledger' | 'requests';
 
 function HealthStatus() {
   const health = useQuery({ queryKey: ['health'], queryFn: async () => z.object({ status: z.literal('up') }).parse((await api.get('/health/ready')).data), retry: false });
@@ -30,6 +31,10 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('operate');
   const [history, setHistory] = useState<SentOperation[]>([]);
   const [lookupRequest, setLookupRequest] = useState<LookupRequest | null>(null);
+  const requestLog = useRequestLog();
+  const latestRequest = requestLog[0];
+  const [seenRequest, setSeenRequest] = useState(0);
+  const unseenRequest = tab !== 'requests' && latestRequest && latestRequest.id > seenRequest ? latestRequest : undefined;
   const wallet = useQuery({ queryKey: ['wallet', walletId], queryFn: ({ signal }) => getWallet(walletId, signal), enabled: !!walletId });
   const walletData = wallet.data;
   const openedId = walletData?.id;
@@ -38,6 +43,17 @@ export default function App() {
   useEffect(() => {
     if (openedId && openedPlayer) setRecent(rememberWallet({ id: openedId, playerId: openedPlayer }));
   }, [openedId, openedPlayer]);
+
+  // Com a aba aberta, tudo o que chega já foi visto.
+  useEffect(() => {
+    if (tab === 'requests' && latestRequest) setSeenRequest(latestRequest.id);
+  }, [tab, latestRequest]);
+
+  const tabs: TabItem<Tab>[] = [
+    { id: 'operate', label: 'Operar' }, { id: 'consult', label: 'Consultar' }, { id: 'ledger', label: 'Extrato' },
+    { id: 'requests', label: 'Últimas requisições', attention: !!unseenRequest,
+      bubble: unseenRequest && { key: unseenRequest.id, text: `${unseenRequest.method} ${unseenRequest.path.split('?')[0]}` } },
+  ];
 
   const walletHistory = useMemo(() => history.filter((item) => item.walletId === walletId), [history, walletId]);
   const externalIds = useMemo(() => new Map(walletHistory.flatMap((item) =>
@@ -72,6 +88,8 @@ export default function App() {
         </TabPanel>
         <TabPanel id="consult" active={tab === 'consult'}><TransactionLookup request={lookupRequest} /></TabPanel>
         <TabPanel id="ledger" active={tab === 'ledger'}><Ledger key={walletData.id} walletId={walletData.id} externalIds={externalIds} /></TabPanel>
+        <TabPanel id="requests" active={tab === 'requests'}><RequestsPanel /></TabPanel>
+        <p className="sr-only" aria-live="polite">{unseenRequest ? `Requisição registrada em Últimas requisições: ${unseenRequest.label}` : ''}</p>
       </>}
     </main>
   </div>;
