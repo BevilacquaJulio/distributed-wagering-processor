@@ -1,48 +1,165 @@
+<div align="center">
+
 # Distributed Wagering Processor
 
-Processador financeiro Jungle Gaming: abertura de wallet, BET, WIN, LOSS, REFUND e ROLLBACK, ledger, outbox publicada, replay, referências fora de ordem resolvidas por worker e painel local de testes. Dinheiro é string decimal nos contratos e bigint em centavos no domínio.
+**Processador financeiro distribuído para apostas de iGaming.**<br>
+Saldo, ledger e eventos corretos mesmo com mensagens duplicadas, fora de ordem, concorrência entre instâncias e falhas no meio do caminho.
 
-Provedores de jogos enviam apostas e resultados por HTTP ou pela fila SQS; o sistema mantém saldo, ledger e eventos corretos diante de mensagens duplicadas, referências fora de ordem, concorrência entre instâncias e falhas. Decisões, trade-offs e limitações estão no [ARCHITECTURE.md](ARCHITECTURE.md).
+[![CI](https://github.com/BevilacquaJulio/distributed-wagering-processor/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BevilacquaJulio/distributed-wagering-processor/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/BevilacquaJulio/distributed-wagering-processor/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/BevilacquaJulio/distributed-wagering-processor/actions/workflows/codeql.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=BevilacquaJulio_distributed-wagering-processor&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=BevilacquaJulio_distributed-wagering-processor)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=BevilacquaJulio_distributed-wagering-processor&metric=coverage)](https://sonarcloud.io/summary/new_code?id=BevilacquaJulio_distributed-wagering-processor)
+
+![Bun](https://img.shields.io/badge/Bun-1.4.2-14151a?logo=bun&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9_strict-3178c6?logo=typescript&logoColor=white)
+![NestJS](https://img.shields.io/badge/NestJS-11-e0234e?logo=nestjs&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17.6-4169e1?logo=postgresql&logoColor=white)
+![MikroORM](https://img.shields.io/badge/MikroORM-6.6-2b6cb0)
+![SQS](https://img.shields.io/badge/AWS_SQS-MiniStack_1.5.15-ff9900?logo=amazonsqs&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker_Compose-v2-2496ed?logo=docker&logoColor=white)
+
+[Início rápido](#início-rápido) · [Usando o sistema](#usando-o-sistema) · [API](#contrato-da-api) · [Testes](#testes) · [Arquitetura](ARCHITECTURE.md)
+
+</div>
+
+---
+
+## Sumário
+
+- [Visão geral](#visão-geral)
+- [Como funciona](#como-funciona)
+- [Início rápido](#início-rápido)
+- [Execução detalhada](#execução-detalhada)
+- [Endereços e portas](#endereços-e-portas)
+- [Usando o sistema](#usando-o-sistema)
+- [Contrato da API](#contrato-da-api)
+- [Fila de comandos](#fila-de-comandos)
+- [Referências fora de ordem](#referências-fora-de-ordem)
+- [Eventos e outbox](#eventos-e-outbox)
+- [Observabilidade](#observabilidade)
+- [Testes](#testes)
+- [Banco de dados](#banco-de-dados)
+- [Scripts disponíveis](#scripts-disponíveis)
+- [Estrutura do repositório](#estrutura-do-repositório)
+- [CI](#ci)
+- [Operação e atualização](#operação-e-atualização)
+- [Limitações](#limitações)
+
+---
+
+## Visão geral
+
+Provedores de jogos enviam apostas (`BET`) e resultados (`WIN`, `LOSS`, `REFUND`, `ROLLBACK`) por **HTTP** ou pela fila **SQS**. Cada operação movimenta a wallet do jogador e grava um lançamento num **ledger imutável** e eventos numa **outbox**, tudo na mesma transação.
+
+A entrega é at-least-once, então o sistema assume que:
+
+- a mesma operação pode chegar várias vezes;
+- a operação dependente pode chegar antes da referenciada;
+- várias instâncias podem tocar a mesma wallet ao mesmo tempo;
+- o processo pode morrer antes ou depois do commit.
+
+| Garantia | Como é obtida |
+| --- | --- |
+| Dinheiro exato | `bigint` em centavos no domínio, `numeric(20,2)` no banco e string `"25.00"` nos contratos. Nunca `number`. |
+| Sem débito ou crédito duplicado | Idempotência persistente por provedor e chave, mais inbox para a fila, com UNIQUE no banco. |
+| Saldo nunca negativo | Lock pessimista por wallet e CHECK no schema; provado com três processos simultâneos. |
+| Ledger auditável | Append-only com triggers contra UPDATE, DELETE e TRUNCATE; a reconciliação compara saldo e ledger. |
+| Nenhum evento confirmado perdido | Transactional outbox e publisher com claim, lease e reenvio com o mesmo `eventId`. |
+| Funciona com várias instâncias | Toda coordenação acontece no PostgreSQL, nunca em memória. |
+
+As decisões, os trade-offs e as limitações estão no **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+## Como funciona
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Provedor
+  participant A as API ou consumidor SQS
+  participant DB as PostgreSQL
+  participant W as Publisher
+  participant Q as wager-events.fifo
+  P->>A: BET (Idempotency-Key)
+  A->>DB: reserva identidade (UNIQUE)
+  A->>DB: SELECT wallet FOR UPDATE
+  A->>DB: saldo, ledger, resultado e outbox
+  A->>DB: COMMIT
+  A-->>P: 200 com saldo observado (ou ack da mensagem)
+  W->>DB: claim de eventos (SKIP LOCKED + lease)
+  W->>Q: SendMessageBatch (deduplicação = eventId)
+  W->>DB: published_at, se o claim ainda for dele
+```
+
+Quatro processos saem da mesma base de código e usam o mesmo caso de uso financeiro:
 
 | Processo | Comando | Papel |
 | --- | --- | --- |
-| API | `bun run dev` | HTTP, consultas, reconciliação, health, métricas e documentação Swagger em `/docs`. |
-| Consumidor | `bun run consumer` | Comandos da fila `wager-transactions.fifo`, com inbox e DLQ. |
+| API | `bun run dev` | HTTP, consultas, reconciliação, health, métricas e Swagger em `/docs`. |
+| Consumidor | `bun run consumer` | Comandos da fila `wager-transactions.fifo`, com inbox, retry e DLQ. |
 | Publisher | `bun run publisher` | Entrega da outbox à fila `wager-events.fifo`. |
-| Worker de referências | `bun run reference-worker` | Reavaliação e expiração de operações `PENDING_REFERENCE`. |
+| Worker de referências | `bun run reference-worker` | Reavalia operações que chegaram antes da referência e as expira em 24h. |
 
-Todos usam o mesmo caso de uso financeiro e podem rodar em várias instâncias. O painel React serve para testes manuais contra a API real: em Docker no serviço `web` (http://127.0.0.1:8080) ou no host com `bun run dev:web`. Não há autenticação de provedores nesta versão (ver ARCHITECTURE.md); API, Vite e portas de banco usam loopback no host.
+Há também um **painel React** de testes manuais, que consome a API real: em Docker no serviço `web` (porta 8080) ou no host com `bun run dev:web` (porta 5173).
 
-## Como executar o projeto
+---
 
-### Pré-requisitos
+## Início rápido
 
-- Bun **1.4.2**, conforme `.bun-version` e `packageManager`; [instalação oficial](https://bun.com/docs/installation).
-- Docker com Docker Compose v2 para PostgreSQL (`postgres:17.6-alpine`) e o emulador SQS [MiniStack](https://ministack.org/) (`ministackorg/ministack:1.5.15`). O MiniStack não exige conta nem token; o LocalStack passou a exigir token a partir da versão 2026.03.0.
-- Git para obter o código. Nenhum Node/npm separado é usado pelos comandos abaixo.
+**Pré-requisitos:** [Bun 1.4.2](https://bun.com/docs/installation), Docker com Compose v2 e Git. O emulador SQS é o [MiniStack](https://ministack.org/), que não exige conta nem token.
 
-As instruções abaixo estão em PowerShell e pressupõem a raiz do repositório. Os comandos alteram somente o ambiente local configurado; são passos manuais. Não há migration em bootstrap, healthcheck, setup de teste ou inicialização de container.
-
-### Obter e preparar
+Os comandos estão em PowerShell. No Linux ou no macOS, troque `Copy-Item` por `cp`; os demais são iguais.
 
 ```powershell
 git clone https://github.com/BevilacquaJulio/distributed-wagering-processor.git
 cd distributed-wagering-processor
-```
-
-O código desta entrega está integrado em `main`. Novas entregas passam primeiro pela branch `teste`.
-
-```powershell
 Copy-Item .env.example .env
 Copy-Item .env.test.example .env.test
 bun install --frozen-lockfile
+
+docker compose -f compose.yml up -d postgres sqs   # aguarde os dois ficarem healthy
+bun run db:provision                               # cria o papel restrito jungle_runtime
+bun run db:migrate                                 # aplica as migrations (manual, por decisão)
+bun run sqs:provision                              # cria as filas de comandos, DLQ e eventos
+
+docker compose -f compose.yml up -d --build api consumer publisher reference-worker web
 ```
 
-Executar as cópias apenas se os arquivos locais ainda não existirem. Ajustar senhas antes de uso e mantê-las consistentes entre `POSTGRES_PASSWORD`, `DATABASE_RUNTIME_PASSWORD` e as URLs; caracteres especiais em URLs precisam de percent-encoding. Os valores dos exemplos são credenciais fictícias de desenvolvimento. `VITE_*` é público e não pode conter segredo.
+Pronto:
 
-`bun.lock` é o lockfile único e versionado; `--frozen-lockfile` falha se o manifesto divergir dele. Não substituir por lockfile npm/yarn nem editar o lockfile manualmente.
+| O quê | Onde |
+| --- | --- |
+| Painel de testes | http://127.0.0.1:8080 |
+| Swagger da API | http://127.0.0.1:3000/docs |
+| Readiness | http://127.0.0.1:3000/health/ready |
 
-### Rodando localmente
+> [!NOTE]
+> Migrations nunca rodam no startup, no healthcheck nem no `up` do Compose: são sempre um comando explícito com o papel administrativo. Por isso o Bun é necessário no host para os três comandos de preparação.
+
+---
+
+## Execução detalhada
+
+<details>
+<summary><b>Configuração (.env)</b></summary>
+
+Copie `.env.example` para `.env` e `.env.test.example` para `.env.test`, só se ainda não existirem. Os valores de exemplo são credenciais fictícias de desenvolvimento. Mantenha as senhas consistentes entre `POSTGRES_PASSWORD`, `DATABASE_RUNTIME_PASSWORD` e as URLs; caracteres especiais em URL precisam de percent-encoding.
+
+| Variável | Uso |
+| --- | --- |
+| `DATABASE_ADMIN_URL` | Papel administrativo: só `db:provision` e migrations. |
+| `DATABASE_URL` | Papel `jungle_runtime` da aplicação: sem DDL nem privilégio de dono. |
+| `DATABASE_URL_CONTAINER`, `SQS_ENDPOINT_CONTAINER` | Mesmos destinos vistos de dentro da rede do Compose. |
+| `SQS_*` | Endpoint, região e nomes das filas (comandos, DLQ e eventos). |
+| `API_DOCS_ENABLED` | `false` remove o Swagger (`/docs`). |
+| `METRICS_HOST`, `METRICS_PORT` | Endpoint `/metrics` do consumidor, publisher e worker. |
+| `VITE_*` | Públicas no navegador; nunca coloque segredo. |
+
+`bun.lock` é o lockfile único e versionado. `--frozen-lockfile` falha se o manifesto divergir dele.
+
+</details>
+
+<details>
+<summary><b>Banco e filas</b></summary>
 
 ```powershell
 docker compose -f compose.yml config --quiet
@@ -53,262 +170,386 @@ bun run db:status
 bun run db:migrate
 bun run db:status
 bun run sqs:provision
-bun run dev
 ```
 
-Esperar o serviço `postgres` ficar healthy antes do provisionamento. O alvo de desenvolvimento é `jungle` em `127.0.0.1:55432`. `db:provision` cria o papel restrito `jungle_runtime` uma única vez; se ele já existir, o comando falha sem rotacionar a senha. `DATABASE_ADMIN_URL` pertence ao papel administrativo, usado somente por provisionamento/migrations. `DATABASE_URL` pertence ao runtime, que não possui DDL nem privilégios de dono.
+- `db:provision` cria o papel restrito `jungle_runtime` uma única vez; se ele já existir, o comando falha sem trocar a senha.
+- `db:status` deve terminar com `pending` vazio.
+- `sqs:provision` cria `wager-transactions.fifo` (visibilidade de 30s, redrive para a DLQ após 5 recebimentos), `wager-transactions-dlq.fifo` e `wager-events.fifo` (as duas com retenção de 14 dias). É idempotente; `sqs:status` mostra os atributos.
 
-Em outro terminal, na mesma raiz:
+</details>
 
-```powershell
-bun run dev:web
-```
+<details>
+<summary><b>Processos no host (desenvolvimento)</b></summary>
 
-Painel: `http://127.0.0.1:5173`. API: `http://127.0.0.1:3000`. O Vite encaminha `/api/*` para a API e remove somente `/api`; os endpoints NestJS preservam os caminhos do case. `API_PROXY_TARGET` é configuração do servidor Vite. Nesta entrega `VITE_API_URL` fica vazio e o cliente usa `/api` na mesma origem.
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:3000/health/live
-Invoke-RestMethod http://127.0.0.1:3000/health/ready
-```
-
-Readiness responde 200 somente com o schema na versão esperada e a fila de comandos alcançável; caso contrário, 503. Ela não cria filas nem aplica migrations.
-
-`sqs:provision` cria manualmente `wager-transactions.fifo` (visibilidade de 30s, redrive para a DLQ após 5 recebimentos), `wager-transactions-dlq.fifo` (retenção de 14 dias) e a fila de eventos `wager-events.fifo` (retenção de 14 dias); `sqs:status` mostra os atributos. O comando é idempotente para os mesmos atributos.
-
-Consumidor da fila, publisher da outbox e worker de referências, cada um em outro terminal:
+Um terminal para cada processo:
 
 ```powershell
+bun run dev                # API em http://127.0.0.1:3000 (recarrega ao salvar)
 bun run consumer
 bun run publisher
 bun run reference-worker
+bun run dev:web            # painel em http://127.0.0.1:5173
 ```
 
-Cada um expõe `/metrics` e `/health/live` em loopback: consumidor na porta 9101, publisher na 9102 e worker na 9103 (`METRICS_PORT` e `METRICS_HOST` sobrescrevem). A API expõe `/metrics` na própria porta, com os gauges de backlog lidos do banco:
+O Vite encaminha `/api/*` para a API e remove só o prefixo `/api`. Não rode a API no host e no Docker ao mesmo tempo, porque as duas disputam a porta 3000.
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:3000/metrics
-Invoke-RestMethod http://127.0.0.1:9101/metrics
-```
+</details>
 
-### Rodando a API em Docker
-
-Com PostgreSQL e o emulador no ar, o papel provisionado e as migrations e filas aplicadas manualmente (passos acima):
+<details>
+<summary><b>Stack em Docker</b></summary>
 
 ```powershell
 docker compose -f compose.yml up -d --build api consumer publisher reference-worker web
 docker compose -f compose.yml ps
-docker compose -f compose.yml logs -f --tail=100 api consumer publisher reference-worker web postgres sqs
-docker compose -f compose.yml down
+docker compose -f compose.yml logs -f --tail=100 api consumer publisher reference-worker web
+docker compose -f compose.yml down            # preserva o volume do banco
 ```
 
-Parar a API, o consumidor, o publisher e o worker executados no host antes de iniciar os containers. Os serviços `consumer`, `publisher` e `reference-worker` usam a mesma imagem com `bun dist/consumer.js`, `bun dist/publisher.js` e `bun dist/reference-worker.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem, o lote ou a resolução em andamento. Publisher e worker aceitam várias instâncias (`--scale publisher=2`, `--scale reference-worker=2`); o worker só usa PostgreSQL. Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. Nos containers, `/metrics` dos processos fica só na rede interna do Compose, sem porta publicada no host.
+- Uma única imagem (`Dockerfile`) roda os quatro processos: `dist/main.js`, `dist/consumer.js`, `dist/publisher.js` e `dist/reference-worker.js`. Ela instala dependências congeladas, roda como usuário `bun` e não aplica migrations.
+- `stop_grace_period` de 30s deixa o SIGTERM concluir a mensagem, o lote ou a resolução em andamento.
+- Publisher e worker escalam: `--scale publisher=2`, `--scale reference-worker=2`.
+- O serviço `web` (`Dockerfile.web`) constrói o painel com Bun e o serve com nginx sem root. O nginx encaminha `/api/*` para a API pela rede interna, aplica CSP restrita e reavalia o DNS da API se o container dela for recriado.
+- `/metrics` do consumidor, publisher e worker fica só na rede interna do Compose.
 
-O serviço `web` (`Dockerfile.web`) constrói o painel com Bun e o serve com nginx sem root em http://127.0.0.1:8080. O nginx encaminha `/api/*` para a API pela rede interna e remove o prefixo, o mesmo contrato do proxy do Vite, então o navegador fala com uma única origem. A configuração (`web/nginx.conf`) aplica CSP restrita, `nosniff`, sem referrer, e reavalia o DNS da API para tolerar a recriação do container. Para desenvolver o painel com recarga automática, continue usando `bun run dev:web` na porta 5173. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
+</details>
 
-## Validação
+## Endereços e portas
 
-Após instalar as dependências:
+Tudo é publicado só em `127.0.0.1`.
+
+| Serviço | Endereço |
+| --- | --- |
+| Painel (Docker) | http://127.0.0.1:8080 |
+| Painel (host, Vite) | http://127.0.0.1:5173 |
+| API | http://127.0.0.1:3000 |
+| Swagger UI | http://127.0.0.1:3000/docs |
+| OpenAPI 3.1 | http://127.0.0.1:3000/docs/openapi.json (ou `.yaml`) |
+| Métricas da API | http://127.0.0.1:3000/metrics |
+| Métricas do consumidor, publisher e worker (host) | portas 9101, 9102 e 9103, em `/metrics` |
+| PostgreSQL de desenvolvimento | `127.0.0.1:55432`, banco `jungle` |
+| PostgreSQL de testes | `127.0.0.1:55433`, banco `jungle_test` |
+| Emulador SQS (MiniStack) | http://127.0.0.1:4566 |
+
+---
+
+## Usando o sistema
+
+### Pelo painel
+
+Abra o painel (8080 em Docker ou 5173 no host) e siga o roteiro:
+
+1. Gere um jogador e crie uma wallet com `100.00 BRL`.
+2. Envie uma BET de `25.00`: saldo `75.00`, versão 2, crédito OPENING e débito BET no ledger.
+3. **Reenviar mesma operação**: replay, sem novo débito.
+4. **Nova operação** com valor acima do saldo: rejeição auditável `INSUFFICIENT_FUNDS`, saldo intacto.
+5. **REFUND** de `10.00` com ID externo referenciado `bet-futura-1`: resposta 202 `PENDING_REFERENCE`.
+6. **Nova operação**: BET de `10.00` com ID externo `bet-futura-1`. Consulte o REFUND, que passa a `PROCESSED` em cerca de 1s, resolvido pelo worker.
+7. **LOSS** com `0.00`: saldo e versão não mudam.
+8. **Conferir saldo**: diferença `0.00` entre saldo e ledger.
+
+### Pela API (PowerShell)
+
+Os exemplos funcionam no PowerShell 5.1 e no 7. `Send-Wager` devolve o corpo também nas respostas 4xx, para você ver o `failureCode`.
+
+```powershell
+$base = 'http://127.0.0.1:3000'
+
+$wallet = Invoke-RestMethod -Method Post "$base/wallets" -ContentType 'application/json' -Body (@{
+  playerId       = [guid]::NewGuid().ToString()
+  initialBalance = @{ amount = '100.00'; currency = 'BRL' }
+} | ConvertTo-Json)
+
+function Send-Wager([string]$Kind, [string]$Amount, [string]$ExternalId, [string]$Reference) {
+  $body = @{
+    providerId = 'provider-a'; externalTransactionId = $ExternalId; playerId = $wallet.playerId; walletId = $wallet.id
+    roundId = 'round-1'; gameId = 'game-1'; kind = $Kind; money = @{ amount = $Amount; currency = 'BRL' }
+  }
+  if ($Reference) { $body.referenceExternalTransactionId = $Reference }
+  try {
+    Invoke-RestMethod -Method Post "$base/wagering/transactions" -ContentType 'application/json' `
+      -Headers @{ 'Idempotency-Key' = "key-$ExternalId" } -Body ($body | ConvertTo-Json)
+  } catch {
+    $_.ErrorDetails.Message | ConvertFrom-Json
+  }
+}
+
+$run = [guid]::NewGuid().ToString('N').Substring(0, 6)   # IDs novos a cada execução do roteiro
+
+Send-Wager BET '25.00' "bet-$run-1" | ConvertTo-Json                    # PROCESSED, saldo 75.00
+Send-Wager BET '25.00' "bet-$run-1" | ConvertTo-Json                    # replay: mesmo resultado, idempotentReplay true
+Send-Wager BET '500.00' "bet-$run-2" | ConvertTo-Json                   # REJECTED, INSUFFICIENT_FUNDS
+Send-Wager REFUND '10.00' "refund-$run" "bet-$run-3" | ConvertTo-Json   # 202 PENDING_REFERENCE
+Send-Wager BET '10.00' "bet-$run-3" | ConvertTo-Json                    # a referência chega; o worker resolve o REFUND
+
+Invoke-RestMethod "$base/wallets/$($wallet.id)" | ConvertTo-Json
+Invoke-RestMethod "$base/wallets/$($wallet.id)/ledger?limit=50" | ConvertTo-Json -Depth 5
+Invoke-RestMethod "$base/providers/provider-a/wagering/transactions/refund-$run" | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Method Post "$base/wallets/$($wallet.id)/reconciliation" | ConvertTo-Json
+```
+
+### Pela fila SQS
+
+`sqs:send` monta o envelope do case (§10), valida com os mesmos schemas do consumidor e envia para a fila de comandos, com `MessageGroupId` igual à wallet:
+
+```powershell
+bun run sqs:send <walletId> <playerId> BET 25.00
+bun run sqs:send <walletId> <playerId> REFUND 25.00 <idExternoDaBet>
+```
+
+A saída mostra o `messageId`, o `externalTransactionId` gerado e a `idempotencyKey`. Com o consumidor no ar, consulte o resultado em `GET /providers/provider-a/wagering/transactions/<externalTransactionId>`.
+
+### Pelo Swagger
+
+http://127.0.0.1:3000/docs lista todos os endpoints com schemas, exemplos e códigos de resposta, e permite enviar requisições pelo navegador (**Try it out**). Os schemas das requisições são gerados dos mesmos schemas Zod que validam a API, e um teste garante que toda rota está documentada e que as respostas reais correspondem ao documento.
+
+---
+
+## Contrato da API
+
+| Método e caminho | Comportamento |
+| --- | --- |
+| `POST /wallets` | Cria wallet única por jogador e moeda; abertura positiva gera OPENING e ledger. |
+| `GET /wallets/:walletId` | Saldo e versão atuais. |
+| `POST /wagering/transactions` | BET, WIN, LOSS, REFUND e ROLLBACK, com header `Idempotency-Key` obrigatório. |
+| `GET /wagering/transactions/:transactionId` | Estado atual, vínculo com a referência e resposta persistida (terminal ou aceite pendente). |
+| `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | Mesma consulta, pela identidade do provedor. |
+| `GET /wallets/:walletId/ledger?limit=50&cursor=...` | Ordem crescente, cursor opaco, limite de 1 a 100. |
+| `POST /wallets/:walletId/reconciliation` | Compara saldo e ledger em leitura consistente; não corrige divergência. |
+| `GET /health/live`, `/health/ready` | Liveness; readiness com schema na versão esperada e fila de comandos alcançável. |
+| `GET /metrics` | Métricas Prometheus, com backlog lido do banco. |
+| `GET /docs`, `/docs/openapi.json`, `/docs/openapi.yaml` | Swagger UI e OpenAPI 3.1. |
+
+**Formatos**
+- **Money:** `{ "amount": "25.00", "currency": "BRL" }`, com exatamente duas casas, sem sinal, expoente, espaços ou zeros à esquerda. O máximo é `999999999999999999.99`, e só BRL está habilitada.
+- **Identificadores:** provedor, ID externo, chave, rodada e jogo têm de 1 a 128 caracteres (`A-Z a-z 0-9 . _ : -`) e começam por letra ou número. Não há trim nem mudança de caixa. Jogador e wallet são UUID.
+- **Referência:** `referenceExternalTransactionId` é obrigatório em REFUND e ROLLBACK, opcional em WIN e recusado em BET e LOSS. LOSS exige `0.00`; as demais operações exigem valor positivo.
+- **Body:** JSON de até 16 KiB; campos desconhecidos são rejeitados. OPENING é interno e recusado.
+
+| HTTP | Significado |
+| --- | --- |
+| 201 | Wallet criada. |
+| 200 | Processada, consultada ou replay de resultado processado. |
+| 202 | Aceita aguardando a referência (`PENDING_REFERENCE`); não é resultado final. |
+| 400 | Payload ou header inválido (`INVALID_PAYLOAD`, `MISSING_IDEMPOTENCY_KEY`). |
+| 404 | `WALLET_NOT_FOUND` ou `TRANSACTION_NOT_FOUND`. |
+| 409 | `IDEMPOTENCY_CONFLICT`, `EXTERNAL_ID_CONFLICT` ou `WALLET_ALREADY_EXISTS`. |
+| 422 | Rejeição de negócio persistida, com `failureCode` e saldo observado. |
+| 503 | Indisponibilidade transitória; reenvie com a mesma chave. |
+
+Erros de transporte seguem `{ "error": { "code", "message", "requestId" } }`, sem SQL, stack ou segredos.
+
+<details>
+<summary><b>Códigos de falha (<code>failureCode</code>)</b></summary>
+
+| `failureCode` | Situação | O que o provedor pode fazer |
+| --- | --- | --- |
+| `INSUFFICIENT_FUNDS` | BET maior que o saldo. | Nova aposta exige nova identidade. |
+| `REVERSAL_INSUFFICIENT_FUNDS` | ROLLBACK de WIN/REFUND sem saldo para desfazer o crédito. | Tratamento operacional; não é falta de saldo de aposta. |
+| `AMOUNT_NOT_ALLOWED` | LOSS diferente de 0.00 ou demais operações com 0.00. | Corrigir o payload com nova identidade. |
+| `BALANCE_LIMIT_EXCEEDED` | Crédito ultrapassaria 999999999999999999.99. | Corrigir o valor com nova identidade. |
+| `CURRENCY_MISMATCH` / `CURRENCY_NOT_SUPPORTED` | Moeda diferente da wallet ou não habilitada. | Corrigir a moeda. |
+| `WALLET_PLAYER_MISMATCH` | Jogador não é dono da wallet. | Corrigir jogador ou wallet. |
+| `INVALID_REFERENCE` | A operação referencia o próprio ID externo. | Corrigir a referência. |
+| `REFERENCE_NOT_PROCESSED` | A referência existe, mas foi rejeitada. | Desistir da reversão. |
+| `REFERENCE_MISMATCH` | Tipo, jogador, wallet, moeda ou rodada incompatíveis. | Corrigir a referência. |
+| `REFERENCE_AMOUNT_MISMATCH` | Valor da reversão diferente do original. | Enviar o valor integral. |
+| `REFERENCE_ALREADY_REVERSED` | Já existe reversão processada do mesmo tipo. | Nada a fazer; o efeito já foi aplicado. |
+| `REFERENCE_EXPIRED` | A referência não chegou em 24h desde o aceite. | Reenviar a operação original, se ainda for devida. |
+
+</details>
+
+---
+
+## Fila de comandos
+
+Envelope (§10 do case): `messageId`, `type: "WagerTransactionRequested"`, `occurredAt` em ISO-8601 e `data` com os campos do POST de transação mais `idempotencyKey`. O consumidor usa o mesmo caso de uso da API, com a inbox `(consumerName, messageId)` na mesma transação SQL. Recomenda-se `MessageGroupId` por wallet; a deduplicação do broker é otimização, não garantia.
+
+| Situação | Tratamento |
+| --- | --- |
+| Processada, rejeitada por regra de negócio ou `PENDING_REFERENCE` | Commit e depois ack (`DeleteMessage`). |
+| Mesmo `messageId` e conteúdo, ou operação já feita por HTTP | Replay do resultado persistido e ack, sem novo efeito. |
+| JSON inválido, envelope fora do contrato, OPENING ou kind desconhecido | DLQ com `failureReason = INVALID_ENVELOPE`. |
+| Mesmo `messageId` com outro conteúdo | DLQ com `INBOX_CONFLICT`; o primeiro efeito é preservado. |
+| Conflito de chave ou ID externo; wallet inexistente | DLQ com o código correspondente. |
+| Falha transitória | Sem ack; visibilidade com backoff de 2s a 60s; após 5 recebimentos, o redrive do broker leva à DLQ. |
+
+O original de uma mensagem permanente só é apagado depois que a DLQ confirma o envio. Um crash entre o commit e o ack é resolvido pela inbox na reentrega. No SIGTERM, o consumidor conclui a mensagem em andamento e devolve a visibilidade das demais.
+
+## Referências fora de ordem
+
+WIN, REFUND ou ROLLBACK cuja referência ainda não existe são aceitos com **202 `PENDING_REFERENCE`**. O aceite, a agenda e o evento `WagerTransactionPendingReference` são duráveis. O worker reavalia sob o lock da wallet:
+
+| Na reavaliação | Resultado |
+| --- | --- |
+| Referência processada e compatível | `PROCESSED`, com saldo, ledger, resultado e eventos na mesma transação. |
+| Referência rejeitada ou incompatível | `REJECTED` com o `failureCode` da regra. |
+| Ainda ausente, dentro do prazo | Reagenda com espera de 2s, 4s, 8s... até 5min, sem evento novo. |
+| Ainda ausente após 24h | `REJECTED` com `REFERENCE_EXPIRED` e evento. |
+
+Quando uma operação fica terminal, as pendências que a referenciam são antecipadas na mesma transação; cadeias, como um ROLLBACK de um REFUND pendente, se resolvem em sequência. Workers paralelos se coordenam por claim com `SKIP LOCKED`, token e lease de 30s.
+
+## Eventos e outbox
+
+Eventos (`WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference` e `WalletBalanceChanged`, este só quando o saldo muda) são gravados em `outbox_messages` no mesmo commit da operação. O publisher envia a `wager-events.fifo` com `MessageGroupId` igual à wallet e `MessageDeduplicationId` igual ao `eventId`.
+
+| Falha | Resultado |
+| --- | --- |
+| Crash depois do claim e antes do envio | A lease vence e outro publisher entrega. |
+| Crash depois do envio e antes de `published_at` | Reenvio com o mesmo `eventId`: o FIFO descarta a cópia em até 5 minutos e o consumidor deduplica depois disso. |
+| Publisher pausado além da lease | Outro assume; o antigo não consegue confirmar. |
+| Falha de envio | Backoff de 1s a 5min; o evento nunca é descartado. |
+
+Garantia: entrega ao menos uma vez com identidade estável. Não há exactly-once entre PostgreSQL e SQS.
+
+---
+
+## Observabilidade
+
+- **Logs:** JSON com `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId`, sem payload financeiro, SQL ou segredos. Envie `X-Correlation-Id` para propagar o seu.
+- **Health:** `/health/live` confirma o processo; `/health/ready` exige o schema na versão esperada e a fila de comandos alcançável.
+- **Métricas:** formato Prometheus, com rótulos de valores fixos.
+
+| Métrica | O que mede |
+| --- | --- |
+| `wagering_transactions_total{status}` | Resultados novos; replays não contam. |
+| `wagering_duplicates_total{source}` | Replays HTTP e redeliveries da fila. |
+| `wagering_retries_total{origin}` | Retries de lock, fila, publisher e referência. |
+| `wagering_dead_letters_total`, `sqs_dead_letter_queue_messages` | Envios à DLQ e profundidade consultada no broker. |
+| `wagering_lock_conflicts_total` | Deadlocks, serialization failures e lock timeouts. |
+| `outbox_pending_events`, `outbox_oldest_pending_age_seconds`, `outbox_publish_lag_seconds` | Backlog, outbox lag e latência até a publicação. |
+| `pending_references_open`, `..._oldest_age_seconds`, `..._overdue` | Backlog de referências pendentes. |
+| `wagering_unit_duration_seconds` | Histograma da latência de processamento. |
+
+---
+
+## Testes
+
+Os testes de integração e concorrência usam **PostgreSQL e MiniStack reais**, num banco separado e descartável (`jungle_test`, porta 55433, em memória). Eles recusam rodar contra outro banco e nunca aplicam migrations sozinhos.
 
 ```powershell
 bun run typecheck
 bun run typecheck:web
 bun run lint
 bun run test:unit
-bun run build
-bun run build:web
-```
 
-Unidade cobre Money, wallet, ledger, terminalidade, hash, contratos e o publisher com broker simulado (falha parcial de lote, perda de posse, backoff) e o worker de referências (falha isolada por item, backoff). `build` gera `dist/main.js`, `dist/consumer.js`, `dist/publisher.js` e `dist/reference-worker.js`; `build:web` gera `dist/web`. O segundo build não é um deploy. O start compilado da API é `bun run start:built`.
-
-### Integração com PostgreSQL real
-
-Usar `.env.test` com URLs locais terminando em `/jungle_test`, porta `55433` e `TEST_DATABASE_DISPOSABLE=yes`. Preparar o banco separado:
-
-```powershell
 docker compose -f compose.yml --profile test up -d postgres-test sqs
-docker compose -f compose.yml --profile test ps
-bun --env-file=.env.test run sqs:provision
 bun --env-file=.env.test run db:provision
-bun --env-file=.env.test run db:status
 bun --env-file=.env.test run db:migrate
+bun --env-file=.env.test run sqs:provision
 bun run test:integration
 bun run test:concurrency
-docker compose -f compose.yml --profile test logs --tail=100 postgres-test
 ```
 
-Esperar `postgres-test` e `sqs` healthy. As filas de teste (`wager-transactions-test*.fifo` e `wager-events-test.fifo`) são separadas das de desenvolvimento; os testes do consumidor e do publisher criam e removem filas próprias. Antes dos cenários do publisher, os eventos pendentes deixados por outras suítes são publicados de verdade numa fila temporária, para que cada cenário observe apenas os próprios eventos; do mesmo modo, a suíte do worker vence as pendências antigas com um relógio adiantado antes dos seus cenários. Os testes recusam banco com outro nome/host e não aplicam migrations nem apagam histórico. Geram identidades próprias e incluem API HTTP real, round-trip monetário, replay histórico, conflitos, rejeições, rollback pré-commit, permissões/constraints, paginação e o cliente HTTP do painel contra a API real.
+> [!TIP]
+> O `postgres-test` guarda dados em memória: ao recriar o container, refaça os três comandos de preparação com `--env-file=.env.test`.
 
-O PostgreSQL de testes usa tmpfs: parar/recriar o container pode perder os dados desse serviço, exigindo novo provisionamento e migrations. O volume de desenvolvimento é separado. Não usar `down -v` como atualização normal.
-
-### Concorrência entre três processos
-
-`bun run test:concurrency` usa o mesmo banco descartável e os mesmos pré-requisitos da integração. O teste sobe três processos independentes da API (`bun --no-env-file src/main.ts`), cada um com seu pool, e dispara as requisições distribuídas entre eles.
-
-A disputa é sincronizada por uma barreira no próprio PostgreSQL, sem `sleep`: o teste abre uma transação que segura o recurso disputado (`SELECT ... FOR UPDATE` na wallet ou uma wallet provisória do mesmo jogador), envia as requisições e só libera quando `pg_stat_activity` mostra todas as transações esperando lock. A espera máxima da barreira (2s) fica abaixo do `lock_timeout` da aplicação (3s).
+`test:concurrency` sobe **três processos independentes da API** e sincroniza a disputa por uma barreira no próprio PostgreSQL (`pg_stat_activity`), sem `sleep`:
 
 | Cenário | Resultado exigido |
 | --- | --- |
-| Mesma BET 50 vezes | Uma transação e um débito; 1 resposta original e 49 replays com o mesmo resultado. |
-| Duas BETs de 80.00 contra 100.00 | Uma `PROCESSED`, uma `REJECTED` com `INSUFFICIENT_FUNDS`; saldo final 20.00. |
-| Vinte BETs de 10.00 contra 100.00 | Dez processadas, cada uma com um saldo observado distinto (90.00 a 0.00), e dez rejeitadas. |
-| Wallet bloqueada e outra wallet | A segunda wallet é processada enquanto a primeira continua bloqueada. |
-| Trinta criações da mesma wallet | Uma 201 e 29 409 `WALLET_ALREADY_EXISTS`; uma única wallet no banco. |
-| Dois REFUNDs da mesma BET | Um processado e outro `REFERENCE_ALREADY_REVERSED`; um único crédito. |
+| Mesma BET 50 vezes em paralelo | Uma transação e um débito; 49 replays com o mesmo resultado. |
+| Duas BETs de 80.00 contra 100.00 | Uma `PROCESSED`, uma `INSUFFICIENT_FUNDS`; saldo final 20.00. |
+| Vinte BETs de 10.00 contra 100.00 | Dez processadas com saldos observados de 90.00 a 0.00, dez rejeitadas. |
+| Wallet bloqueada e outra wallet | A segunda é processada enquanto a primeira continua bloqueada. |
+| Trinta criações da mesma wallet | Uma 201 e 29 respostas 409; uma única wallet no banco. |
+| Dois REFUNDs da mesma BET | Um processado e outro `REFERENCE_ALREADY_REVERSED`. |
 
-Cada cenário confere saldo, version, reconciliação com o ledger e a contagem de lançamentos por direção, transações por status e eventos da outbox por tipo.
+Sem o `FOR UPDATE` na wallet, os cenários 80/80 e vinte débitos falham por lost update, o que mostra que a suíte detecta a ausência do lock.
 
-A reversão da migration apaga o histórico e não faz parte do procedimento normal; `db:down` recusa alvos diferentes de `jungle_test` e exige `ALLOW_DISPOSABLE_DOWN=yes`. A CI aplica, reverte e reaplica a migration no banco descartável dela.
+<details>
+<summary><b>Onde cada cenário obrigatório do case é provado</b></summary>
 
-### Conferência manual do painel
+Todos conferem, ao fim, que o saldo armazenado é igual ao reconstruído pelo ledger.
 
-1. Gerar um jogador de teste e criar wallet com `100.00 BRL`.
-2. Enviar BET de `25.00`; verificar saldo `75.00`, versão 2, crédito OPENING e débito BET no ledger.
-3. Usar **Reenviar mesma operação**; confirmar replay e ausência de novo débito.
-4. Usar **Nova operação**, enviar outra BET e verificar que o saldo atual mudou; o resultado de uma operação anterior continua histórico.
-5. Enviar valor acima do saldo; confirmar rejeição auditável e ausência de débito.
-6. Usar **Conferir saldo** e verificar diferença `0.00`.
-7. Trocar o tipo para **REFUND**, usar **Referenciar o último envio** e confirmar o crédito integral; repetir com nova operação e ver `REFERENCE_ALREADY_REVERSED`.
-8. Enviar um **ROLLBACK** com um ID externo que ainda não existe; confirmar a resposta 202 `PENDING_REFERENCE` e consultar a transação em **Consultar transação**. Com `bun run reference-worker` ativo, enviar depois a operação referenciada e consultar de novo: a pendência passa a `PROCESSED`.
-9. Enviar **LOSS** com `0.00` e confirmar que saldo e versão não mudam.
-10. Conferir navegação por teclado, foco, mensagens de validação, estados de erro/indisponibilidade e layout móvel. Essa inspeção visual ainda está pendente.
-
-## Documentação da API (Swagger)
-
-Com a API no ar, a interface Swagger fica em http://127.0.0.1:3000/docs e o documento OpenAPI 3.1 em `/docs/openapi.json` (ou `.yaml`). Os schemas das requisições são gerados dos mesmos schemas Zod que validam a API, e os exemplos passam por essa validação. `tests/integration/api-docs.test.ts` confere que toda rota dos controllers está documentada e que as respostas reais correspondem aos schemas publicados. Em ambientes onde a documentação não deve ser pública, `API_DOCS_ENABLED=false` remove as rotas `/docs`.
-
-## Contrato implementado
-
-| Método/caminho | Comportamento |
+| Cenário | Prova |
 | --- | --- |
-| POST `/wallets` | Cria wallet única por jogador/moeda; abertura positiva gera OPENING e ledger. |
-| GET `/wallets/:walletId` | Saldo e versão atuais. |
-| POST `/wagering/transactions` | BET, WIN, LOSS, REFUND e ROLLBACK com `Idempotency-Key` obrigatório. |
-| GET `/wagering/transactions/:transactionId` | Estado atual, vínculo com a referência e resposta persistida (terminal ou aceite pendente). |
-| GET `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consulta identidade externa. |
-| GET `/wallets/:walletId/ledger?limit=50&cursor=...` | Ordem crescente, cursor opaco e limite de 1 a 100. |
-| POST `/wallets/:walletId/reconciliation` | Compara saldo e ledger em snapshot consistente; não corrige divergência. |
-| GET `/health/live`, `/health/ready`, `/metrics` | Liveness, readiness (schema e fila de comandos) e métricas Prometheus com backlog do banco. |
-| GET `/docs`, `/docs/openapi.json`, `/docs/openapi.yaml` | Swagger UI e documento OpenAPI 3.1; desligável com `API_DOCS_ENABLED=false`. |
-
-Money: `{ "amount": "25.00", "currency": "BRL" }`, duas casas obrigatórias, sem sinais/expoentes/espaços/zeros à esquerda. UUIDs identificam jogador e recursos internos. Provedor, ID externo, chave, rodada e jogo aceitam de 1 a 128 caracteres de letras ASCII, números, `.`, `_`, `:`, `-`, começando por letra/número; não há trim ou mudança de caixa. Body JSON tem limite de 16 KiB e rejeita campos desconhecidos.
-
-`referenceExternalTransactionId` é o ID externo da operação referenciada no mesmo provedor: obrigatório em REFUND e ROLLBACK, opcional em WIN e recusado em BET e LOSS; `null` ou vazio são inválidos. LOSS usa `0.00`; as demais operações exigem valor positivo. REFUND reverte BET; ROLLBACK reverte BET, WIN ou REFUND no sentido inverso; ambos exigem valor integral e mesma wallet, jogador, moeda e rodada. A unicidade de reversão é por referência e tipo, conforme o case: uma BET pode receber um REFUND e um ROLLBACK.
-
-HTTP: 201 criação, 200 processamento/consulta, 202 aceite com referência ainda ausente (`PENDING_REFERENCE`), 400 formato/header, 404 recurso inexistente, 409 colisão, 422 rejeição financeira e 503 indisponibilidade transitória reconhecida. 202 não é resultado financeiro final; o replay devolve o aceite enquanto a operação estiver pendente. A rejeição financeira inclui ID, status, failureCode e saldo observado. Erros de transporte usam `{ error: { code, message, requestId } }`, sem SQL, stack ou secrets. OPENING é interno e recusado pelo contrato.
-
-| `failureCode` | Situação | O que o provedor pode fazer |
-| --- | --- | --- |
-| `INSUFFICIENT_FUNDS` | BET maior que o saldo. | Não reenviar igual; nova aposta exige nova identidade. |
-| `REVERSAL_INSUFFICIENT_FUNDS` | ROLLBACK de WIN/REFUND sem saldo para desfazer o crédito. | Tratamento operacional; não é falta de saldo de aposta. |
-| `AMOUNT_NOT_ALLOWED` | LOSS diferente de 0.00 ou demais operações com 0.00. | Corrigir o payload com nova identidade. |
-| `BALANCE_LIMIT_EXCEEDED` | Crédito ultrapassaria 999999999999999999.99. | Corrigir o valor com nova identidade. |
-| `CURRENCY_MISMATCH` / `CURRENCY_NOT_SUPPORTED` | Moeda diferente da wallet ou não habilitada. | Corrigir a moeda. |
-| `WALLET_PLAYER_MISMATCH` | Jogador não é dono da wallet. | Corrigir jogador ou wallet. |
-| `INVALID_REFERENCE` | Operação referencia o próprio ID externo. | Corrigir a referência. |
-| `REFERENCE_NOT_PROCESSED` | Referência existe, mas foi rejeitada ou falhou. | Desistir da reversão. |
-| `REFERENCE_MISMATCH` | Tipo, jogador, wallet, moeda ou rodada incompatíveis. | Corrigir a referência. |
-| `REFERENCE_AMOUNT_MISMATCH` | Valor da reversão diferente do original. | Enviar o valor integral. |
-| `REFERENCE_ALREADY_REVERSED` | Já existe reversão processada do mesmo tipo para a referência. | Nada a fazer; o efeito já foi aplicado. |
-| `REFERENCE_EXPIRED` | Referência não chegou em 24 horas desde o aceite (aplicado pelo worker de referências). | Reenviar a operação original, se ainda for devida. |
-
-## Cenários obrigatórios do case
-
-Cada cenário da seção 13 do enunciado tem prova automatizada contra PostgreSQL e MiniStack reais; todos conferem no fim que o saldo armazenado é igual ao reconstruído pelo ledger.
-
-| Cenário | Onde é provado |
-| --- | --- |
-| Mesma aposta 50 vezes em paralelo → um débito | `tests/concurrency/concurrency.test.ts` |
-| Disputa de saldo na mesma wallet (80/80 com saldo 100; vinte débitos de 10.00) | `tests/concurrency/concurrency.test.ts` |
-| Wallets distintas em paralelo | `tests/concurrency/concurrency.test.ts` |
-| Três processos/instâncias simultâneos | `tests/concurrency/harness.ts` sobe três processos da API |
+| Mesma aposta 50 vezes → um débito; disputa de saldo; wallets distintas; três instâncias | `tests/concurrency/` |
 | Worker morto depois do commit e antes do ack | `tests/integration/sqs-consumer.test.ts` (processo real com SIGKILL) |
-| Dois publishers sobre a mesma outbox | `tests/integration/outbox-publisher.test.ts` |
-| REFUND/ROLLBACK antes da referência | `tests/integration/operations.test.ts` (aceite) e `tests/integration/reference-worker.test.ts` (resolução, expiração, dois workers) |
-| Reinício com consistência final | Crash antes do envio/depois do envio no publisher, antes do commit no worker e SIGTERM dos processos reais (CI Linux) |
-| Migrations e constraints | `tests/integration/financial-flow.test.ts`, `operations.test.ts`; up/down/up na CI |
-| Atomicidade wallet, ledger, inbox e outbox | Falha antes do commit em `financial-flow.test.ts` e inbox na mesma transação em `sqs-consumer.test.ts` |
+| Dois publishers sobre a mesma outbox; crash antes e depois do envio | `tests/integration/outbox-publisher.test.ts` |
+| REFUND/ROLLBACK antes da referência; expiração; dois workers | `tests/integration/operations.test.ts`, `tests/integration/reference-worker.test.ts` |
+| Reinício com consistência final | Crash em consumidor, publisher e worker; SIGTERM dos processos reais (CI Linux) |
+| Migrations, constraints e atomicidade | `tests/integration/financial-flow.test.ts`, `operations.test.ts`; up/down/up na CI |
 | Inbox, redelivery, retry e DLQ | `tests/integration/sqs-consumer.test.ts` |
-| Money, Wallet, regras por kind, moeda, idempotência com payload divergente | `tests/unit/` e `tests/integration/financial-flow.test.ts` |
-| Divergência entre saldo e ledger sinalizada, contada e não corrigida | `tests/integration/observability.test.ts` |
-| Métricas da API e dos processos, sem IDs nas séries | `tests/integration/observability.test.ts`, `tests/unit/metrics.test.ts` |
+| Money, Wallet, regras por kind, moeda e payload divergente | `tests/unit/`, `tests/integration/financial-flow.test.ts` |
+| Divergência de saldo sinalizada; métricas | `tests/integration/observability.test.ts` |
+| Documentação conforme a API real | `tests/integration/api-docs.test.ts` |
 
-## Fila de comandos
+</details>
 
-Envelope (§10 do case): `messageId`, `type: "WagerTransactionRequested"`, `occurredAt` ISO-8601 e `data` com os mesmos campos do POST de transação mais `idempotencyKey`. O consumidor usa o mesmo caso de uso da API, com a inbox `(consumerName, messageId)` na mesma transação SQL. Recomenda-se `MessageGroupId` por wallet; deduplicação do broker é otimização, não garantia.
+---
 
-| Situação | Tratamento |
+## Banco de dados
+
+| | Desenvolvimento | Testes |
+| --- | --- | --- |
+| Serviço | `postgres` | `postgres-test` (`--profile test`) |
+| Endereço | `127.0.0.1:55432/jungle` | `127.0.0.1:55433/jungle_test` |
+| Dados | Volume persistente | Memória; somem ao recriar |
+| Usado por | API, painel e processos (`.env`) | Suítes automáticas (`.env.test`) |
+
+Para inspecionar com um cliente como DBeaver: host `127.0.0.1`, a porta e o banco da tabela, usuário e senha de `POSTGRES_USER` e `POSTGRES_PASSWORD` do seu `.env`. Prefira uma conexão somente leitura. O papel `jungle_runtime` (senha `DATABASE_RUNTIME_PASSWORD`) enxerga o mesmo que a aplicação e não consegue alterar o histórico.
+
+Tabelas principais: `wallets`, `wallet_ledger`, `wager_transactions`, `transaction_results`, `outbox_messages`, `inbox_messages` e `pending_references`.
+
+## Scripts disponíveis
+
+| Script | O que faz |
 | --- | --- |
-| Processada, rejeitada por regra de negócio ou `PENDING_REFERENCE` | Commit e depois ack (`DeleteMessage`). |
-| Mesmo `messageId` com o mesmo conteúdo, ou operação já feita por HTTP | Replay do resultado persistido e ack, sem novo efeito. |
-| JSON inválido, envelope fora do contrato, OPENING ou kind desconhecido | DLQ com `failureReason = INVALID_ENVELOPE`. |
-| Mesmo `messageId` com outro conteúdo | DLQ com `INBOX_CONFLICT`; o primeiro efeito é preservado. |
-| Conflito de chave ou ID externo; wallet inexistente | DLQ com `IDEMPOTENCY_CONFLICT`, `EXTERNAL_ID_CONFLICT` ou `WALLET_NOT_FOUND`. |
-| Falha transitória (banco indisponível, deadlock esgotado, erro inesperado) | Sem ack; visibilidade com backoff exponencial (2s a 60s). Ao exceder 5 recebimentos, o redrive do broker move para a DLQ. |
+| `dev`, `start`, `start:built` | API com recarga, sem recarga, ou a partir de `dist/`. |
+| `consumer`, `publisher`, `reference-worker` | Demais processos. |
+| `dev:web`, `build:web` | Painel em desenvolvimento ou build estático em `dist/web`. |
+| `build` | Os quatro processos em `dist/`. |
+| `typecheck`, `typecheck:web`, `lint` | Tipos da API e do painel; Biome. |
+| `test:unit`, `test:integration`, `test:concurrency` | Suítes de teste. |
+| `db:provision`, `db:status`, `db:migrate`, `db:down` | Papel restrito e migrations (`db:down` só aceita `jungle_test` com `ALLOW_DISPOSABLE_DOWN=yes`). |
+| `sqs:provision`, `sqs:status`, `sqs:send` | Criar e inspecionar filas; enviar um comando de teste. |
 
-A mensagem permanente só é apagada depois que a DLQ confirma o envio. Um crash depois do commit e antes do ack é resolvido pela inbox na reentrega. No SIGTERM, o consumidor interrompe o long polling, conclui a mensagem em andamento e devolve a visibilidade das que ainda não começaram.
+## Estrutura do repositório
 
-## Referências fora de ordem
-
-WIN, REFUND ou ROLLBACK cuja referência ainda não existe (ou ainda está pendente) são aceitos com 202 `PENDING_REFERENCE`, aceite persistido, agenda em `pending_references` e o evento `WagerTransactionPendingReference`. O processo `bun run reference-worker` reavalia as pendências vencidas com o mesmo caso de uso da API, sob o lock da wallet.
-
-| Situação na reavaliação | Resultado |
-| --- | --- |
-| Referência processada e compatível | Operação `PROCESSED`, com saldo, ledger, vínculo, resultado terminal e eventos na mesma transação. |
-| Referência rejeitada, incompatível ou com outro valor | `REJECTED` com o `failureCode` da regra (`REFERENCE_NOT_PROCESSED`, `REFERENCE_MISMATCH`, ...). |
-| Referência ainda ausente ou pendente, dentro do prazo | Reagenda com espera de 2s, 4s, 8s... até 5min, mais jitter, sem passar do prazo. Nenhum evento novo. |
-| Referência ainda ausente após 24h do aceite | `REJECTED` com `REFERENCE_EXPIRED` e evento `WagerTransactionRejected`. |
-
-Quando uma operação fica terminal, as pendências que a referenciam são antecipadas na mesma transação, sem esperar o backoff; uma cadeia (ROLLBACK de um REFUND pendente) se resolve em sequência. O replay de uma pendência devolve o aceite 202 até a resolução e, depois, o resultado terminal com o saldo observado nela. Os eventos da resolução usam o ID da transação como `correlationId`.
-
-Coordenação: cada worker reivindica até 10 pendências com `FOR UPDATE SKIP LOCKED`, token e lease de 30s. A resolução trava a wallet e depois a agenda (a mesma ordem do envio que antecipa dependentes) e só altera algo se o token ainda for dele. Crash antes do commit desfaz tudo e a pendência volta quando a lease vence; falha de infraestrutura nunca vira `FAILED`. Agenda resolvida é definitiva e só pode ser resolvida junto da transação terminal (proteção no banco).
-
-## Eventos e publisher da outbox
-
-Cada operação grava seus eventos na tabela `outbox_messages` no mesmo commit do saldo e do ledger: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference` e `WalletBalanceChanged` (somente quando o saldo muda). Envelope: `eventId`, `eventType`, `version`, `aggregateId` (wallet), `correlationId`, `occurredAt` e `data` com valores monetários em `{ amount, currency }`.
-
-O publisher (`bun run publisher`) envia à fila `wager-events.fifo`, separada da fila de comandos, com `MessageGroupId` igual à wallet, `MessageDeduplicationId` igual ao `eventId` e o atributo `eventType`. A ordem de envio segue a ordem de gravação; um evento reagendado por falha pode chegar depois de eventos mais novos da mesma wallet, então consumidores devem usar `walletVersion` e `occurredAt` para ordenar.
-
-| Etapa | Comportamento |
-| --- | --- |
-| Claim | Até 10 eventos pendentes, em ordem, com `FOR UPDATE SKIP LOCKED`; grava token, lease de 30s e incrementa `attempts` e confirma o claim antes do envio. |
-| Envio | `SendMessageBatch` com timeout de 10s, menor que a lease, fora de qualquer transação. |
-| Confirmação | `published_at` só é gravado se o token ainda for do publisher; caso contrário conta `event_ownership_lost`. |
-| Falha | Libera o claim, grava `last_error` e agenda `next_attempt_at` com backoff de 1s a 5min mais jitter. O evento nunca é descartado; a partir de 10 tentativas o log passa a `outbox_event_stalled`. |
-
-| Falha | Resultado |
-| --- | --- |
-| Crash depois do claim e antes do envio | A lease vence e outro publisher assume o evento. |
-| Crash depois do envio e antes de `published_at` | O evento é reenviado com o mesmo `eventId`; o SQS FIFO descarta a cópia dentro de 5 minutos e, depois disso, o consumidor deduplica pelo `eventId`. |
-| Publisher pausado além da lease | Outro publisher assume e confirma; o antigo não consegue marcar `published_at`. |
-| Timeout com resultado desconhecido | Tratado como falha: o reenvio pode duplicar, sempre com a mesma identidade. |
-
-A garantia é entrega ao menos uma vez com identidade estável; não há exactly-once entre PostgreSQL e SQS. Evento publicado não pode ser reaberto, e o envelope não pode ser alterado nem apagado (proteções no banco).
+```text
+src/
+  domain/           Money, Wallet, WagerTransaction, LedgerEntry, eventos (sem framework)
+  application/      WageringService e portas
+  infrastructure/   PostgreSQL (MikroORM, migrations, claims), SQS, métricas
+  http/             controllers, filtro de erros, OpenAPI
+  sqs/              consumidor e publisher
+  workers/          worker de referências
+  main.ts, consumer.ts, publisher.ts, reference-worker.ts   pontos de entrada
+web/                painel React + nginx do container
+scripts/            provisionamento, migrations e filas (manuais)
+tests/              unit/, integration/, concurrency/, support/
+```
 
 ## CI
 
-O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualização de PR para `teste` ou `main`, e também por **Actions → CI → Run workflow**.
+O workflow `CI` roda em todo PR para `teste` e `main`:
 
 | Job | O que executa |
 | --- | --- |
-| **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit` com cobertura LCOV, `build`, `build:web`. |
-| **Auditoria de dependências** | `bun audit --audit-level=high`; falha com vulnerabilidade alta ou crítica. |
-| **Imagem Docker e Compose** | Valida o `compose.yml`, constrói as imagens da API e do painel e confere a sintaxe do nginx. |
-| **Integração com PostgreSQL real** | Sobe `postgres-test` e o emulador SQS do Compose com credenciais geradas na execução, cria as filas de teste, provisiona, aplica as migrations, roda `test:integration` (inclui consumidor, publisher, worker de referências, crash dos três e o SIGTERM dos processos reais) com cobertura LCOV e `test:concurrency`, reverte e reaplica a última migration. Publica o log como artefato. |
-| **SonarCloud Quality Gate** | Envia a cobertura de unidade e integração ao SonarCloud e aguarda o Quality Gate (inclui 80% de cobertura no código novo). |
+| Lint, tipos, unidade e build | Instalação congelada, typecheck (API e painel), lint, unidade com cobertura e builds. |
+| Auditoria de dependências | `bun audit --audit-level=high`. |
+| Imagem Docker e Compose | Valida o `compose.yml`, constrói as imagens da API e do painel e roda `nginx -t`. |
+| Integração com PostgreSQL real | Banco e emulador descartáveis com credenciais geradas na hora, migrations, integração e concorrência, e migration down/up/up. |
+| SonarCloud Quality Gate | Cobertura de unidade e integração; 80% no código novo. |
 
-O workflow `CodeQL` (`.github/workflows/codeql.yml`) analisa JavaScript/TypeScript em PRs e em pushes para `teste` e `main`; a análise das branches fixas é a base para identificar alertas novos.
-
-Exceção da auditoria: `GHSA-vfj7-8cjw-p6xm` (`braces`) não tem versão corrigida publicada e é alcançada apenas por globs estáticos do MikroORM e da CLI de migrations. A cobertura exclui migrations, scripts administrativos, os pontos de entrada dos quatro processos (`src/main.ts`, `src/consumer.ts`, `src/publisher.ts`, `src/reference-worker.ts`) e `web/vite.config.ts`, que rodam como processos separados ou configuração, fora da instrumentação do `bun test`.
-
-Migrations só são aplicadas no PostgreSQL descartável criado pelo job; nenhum banco persistente é acessado. Não há deploy.
+O `CodeQL` analisa TypeScript em PRs e nas branches `teste` e `main`. A auditoria tem uma exceção documentada: `braces` (GHSA-vfj7-8cjw-p6xm) não tem versão corrigida e é alcançada só por globs estáticos do MikroORM. Não há deploy.
 
 ## Operação e atualização
 
-- Dependências: atualizar manifesto somente com escopo definido, instalar/revisar `bun.lock` e reconstruir a imagem da API.
-- Código backend: executar validações pertinentes e `docker compose -f compose.yml up -d --build api consumer publisher reference-worker web`.
-- Código do painel: executar `typecheck:web`, `lint` e `build:web`; Vite acompanha edições em desenvolvimento.
-- Schema: inspecionar a migration e o alvo, executar `db:status`, `db:migrate`, `db:status`, validar e depois atualizar a API. Nunca migrar no startup.
-- Env de container: `docker compose -f compose.yml up -d --force-recreate api`; `restart` não recarrega env do Compose.
-- Reiniciar o mesmo processo sem mudança de código/env: `docker compose -f compose.yml restart api`.
+| Mudança | O que fazer |
+| --- | --- |
+| Código da API ou dos processos | `docker compose -f compose.yml up -d --build api consumer publisher reference-worker` |
+| Código do painel | `docker compose -f compose.yml up -d --build web` (ou `bun run dev:web` no host) |
+| Schema | `bun run db:status`, `bun run db:migrate`, `bun run db:status` e depois atualize a API. Nunca migre no startup. |
+| Variável de ambiente de container | `docker compose -f compose.yml up -d --force-recreate api`; `restart` não recarrega env. |
+| Dependências | Atualize o manifesto, revise o `bun.lock` e reconstrua as imagens. |
 
-Não há deploy de produção ou CI/CD configurado. O ponto de extensão `ProviderIdentityPort` é deliberadamente permissivo nesta fase; completar autenticação e operação de produção requer escopo próprio. Decisões e limitações da implementação estão no [ARCHITECTURE.md](ARCHITECTURE.md).
+## Limitações
+
+- Não há autenticação de provedores. `ProviderIdentityPort` é o ponto de extensão, com o desenho de IdP descrito no ARCHITECTURE.md; não exponha a aplicação fora de ambiente controlado.
+- Uma BET pode receber um REFUND e um ROLLBACK (unicidade por referência e tipo, como no enunciado).
+- Entrega de eventos ao menos uma vez, com ordem por wallet de melhor esforço.
+- Só BRL; sem conversão cambial nem limitação de taxa.
+- Sem teste de carga (`test:load`) nem dashboard; as métricas ficam prontas para um coletor Prometheus.
+
+Detalhes e justificativas: **[ARCHITECTURE.md](ARCHITECTURE.md)**.
