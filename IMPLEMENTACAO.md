@@ -53,6 +53,14 @@ A migration `Migration202610090002` acrescenta:
 
 O downgrade descarta vínculos, aceites e agenda e restaura as constraints anteriores como `NOT VALID`, para não falhar com linhas já gravadas pelos novos kinds.
 
+## Fila de comandos e inbox
+
+Emulador SQS: MiniStack 1.5.15. O LocalStack, escolhido inicialmente, passou a exigir token de autenticação na versão 2026.03.0, o que impediria reproduzir o ambiente só com o repositório; o case aceita MiniStack. Antes de adotar, foram verificados no emulador: FIFO com deduplicação, visibilidade, `ChangeMessageVisibility`, `ApproximateReceiveCount`, redrive para DLQ por `maxReceiveCount` e cancelamento de long polling. Divergência encontrada: num envio deduplicado com corpo diferente, o emulador devolve o MD5 da mensagem original e o SDK rejeita a resposta; a aplicação nunca reenvia corpo diferente com a mesma deduplicação.
+
+`src/consumer.ts` é um processo próprio (pool, ORM e lifecycle independentes) que chama o mesmo `WageringService.submit` da API. A migration `Migration202610100001` cria `inbox_messages` com chave `(consumer_name, message_id)`, hash do envelope e vínculo com a transação. A linha é gravada no início da unidade financeira: duas entregas simultâneas da mesma mensagem esperam na chave primária e a segunda encontra o registro confirmado. Depois de processada, a linha é imutável.
+
+A classificação de falhas e o tratamento de cada caso estão no README. Retry usa visibilidade com backoff exponencial e o redrive do broker; mensagens sem identidade utilizável ou conflitantes vão explicitamente para a DLQ com o motivo, e o original só é apagado depois da confirmação da DLQ.
+
 ## Eventos e diagnóstico
 
 Processed, Rejected, PendingReference e BalanceChanged são classes concretas, com envelope versionado e MoneyProps serializável. Eventos são persistidos no mesmo commit. Nenhum publisher/SQS está implementado; eventos permanecem pendentes. Persistência de outbox não equivale a entrega comprovada.

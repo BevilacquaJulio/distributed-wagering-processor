@@ -5,7 +5,7 @@ import type { LedgerEntry } from '../domain/ledger-entry';
 import { type WagerCommand, WagerTransaction } from '../domain/wager-transaction';
 import { Wallet, type WalletState } from '../domain/wallet';
 import { ApplicationError } from './errors';
-import type { Clock, FinancialSession, FinancialUnitOfWork, IdGenerator, PayloadHasher, ProviderIdentityPort, TransactionResult } from './ports';
+import type { Clock, FinancialSession, FinancialUnitOfWork, IdGenerator, InboxDelivery, PayloadHasher, ProviderIdentityPort, TransactionResult } from './ports';
 
 /** Política de espera por referência (D07): primeira reavaliação em 1s e expiração em 24h a partir do aceite. */
 export interface PendingReferencePolicy {
@@ -51,7 +51,8 @@ export class WageringService {
     });
   }
 
-  async submit(input: WagerCommand, idempotencyKey: string, correlationId: string): Promise<TransactionResult> {
+  /** HTTP e fila usam este mesmo caso de uso; a fila acrescenta a inbox à mesma transação SQL. */
+  async submit(input: WagerCommand, idempotencyKey: string, correlationId: string, inbox?: InboxDelivery): Promise<TransactionResult> {
     const command = structuredClone(input);
     await this.identity.assertProvider(command.providerId);
     Money.from(command.money);
@@ -59,34 +60,48 @@ export class WageringService {
     const payloadHash = this.hasher.hash(command);
 
     return this.unitOfWork.run(async (session) => {
-      const existing = await session.reserve({ transactionId, providerId: command.providerId,
-        externalTransactionId: command.externalTransactionId, idempotencyKey, payloadHash });
-      if (existing) {
-        if (existing.idempotencyKey !== idempotencyKey) throw new ApplicationError('EXTERNAL_ID_CONFLICT');
-        if (existing.payloadHash !== payloadHash || existing.externalTransactionId !== command.externalTransactionId) {
-          throw new ApplicationError('IDEMPOTENCY_CONFLICT');
-        }
-        return { ...await session.result(existing.transactionId), idempotentReplay: true };
+      if (!inbox) return this.process(session, command, idempotencyKey, transactionId, payloadHash, correlationId);
+      const received = await session.receiveInbox(inbox, this.clock.now());
+      if (received) {
+        if (received.payloadHash !== inbox.payloadHash) throw new ApplicationError('INBOX_CONFLICT');
+        if (!received.transactionId) throw new Error('Confirmed inbox message without transaction');
+        return { ...await session.result(received.transactionId), idempotentReplay: true };
       }
-
-      // A referência pertence à mesma wallet; o lock da wallet também protege a leitura dela.
-      const wallet = await session.walletForUpdate(command.walletId);
-      const at = this.clock.now();
-      const transaction = WagerTransaction.submit(transactionId, command, at);
-      const entry = await this.decide(session, transaction, wallet, at);
-      await session.insertTransaction(transaction);
-
-      if (transaction.status === 'PENDING_REFERENCE') return this.persistPending(session, transaction, wallet, correlationId, at);
-
-      const state = transaction.toState();
-      if (state.referenceTransactionId) await session.linkReference(state.id, state.referenceTransactionId, command.kind);
-      if (entry) {
-        await session.saveWallet(wallet);
-        await session.appendLedger(entry);
-        await session.enqueue(WalletBalanceChanged.from(entry.toState(), wallet.version, this.eventContext(correlationId, at)).toJSON());
-      }
-      return this.persistTerminal(session, transaction, wallet, correlationId, at);
+      const result = await this.process(session, command, idempotencyKey, transactionId, payloadHash, correlationId);
+      await session.completeInbox(inbox, result.transactionId, this.clock.now());
+      return result;
     });
+  }
+
+  private async process(session: FinancialSession, command: WagerCommand, idempotencyKey: string, transactionId: string,
+    payloadHash: string, correlationId: string): Promise<TransactionResult> {
+    const existing = await session.reserve({ transactionId, providerId: command.providerId,
+      externalTransactionId: command.externalTransactionId, idempotencyKey, payloadHash });
+    if (existing) {
+      if (existing.idempotencyKey !== idempotencyKey) throw new ApplicationError('EXTERNAL_ID_CONFLICT');
+      if (existing.payloadHash !== payloadHash || existing.externalTransactionId !== command.externalTransactionId) {
+        throw new ApplicationError('IDEMPOTENCY_CONFLICT');
+      }
+      return { ...await session.result(existing.transactionId), idempotentReplay: true };
+    }
+
+    // A referência pertence à mesma wallet; o lock da wallet também protege a leitura dela.
+    const wallet = await session.walletForUpdate(command.walletId);
+    const at = this.clock.now();
+    const transaction = WagerTransaction.submit(transactionId, command, at);
+    const entry = await this.decide(session, transaction, wallet, at);
+    await session.insertTransaction(transaction);
+
+    if (transaction.status === 'PENDING_REFERENCE') return this.persistPending(session, transaction, wallet, correlationId, at);
+
+    const state = transaction.toState();
+    if (state.referenceTransactionId) await session.linkReference(state.id, state.referenceTransactionId, command.kind);
+    if (entry) {
+      await session.saveWallet(wallet);
+      await session.appendLedger(entry);
+      await session.enqueue(WalletBalanceChanged.from(entry.toState(), wallet.version, this.eventContext(correlationId, at)).toJSON());
+    }
+    return this.persistTerminal(session, transaction, wallet, correlationId, at);
   }
 
   // Aplica uma única transição sob o lock da wallet; regras violadas viram rejeição persistida, não exceção.

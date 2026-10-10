@@ -67,6 +67,8 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-config-only
           DATABASE_URL_CONTAINER: postgresql://jungle_runtime:ci-config-only@postgres:5432/jungle
+          AWS_ACCESS_KEY_ID: ci-config-only
+          AWS_SECRET_ACCESS_KEY: ci-config-only
       - run: docker build --pull -t jungle-wagering-api:ci .
 
   integracao:
@@ -89,19 +91,30 @@ jobs:
           runtime="$(openssl rand -hex 24)"
           echo "::add-mask::$admin"
           echo "::add-mask::$runtime"
+          # O emulador SQS aceita qualquer credencial; estes valores só existem nesta execução.
           cat > .env <<EOF
           POSTGRES_PASSWORD=$admin
           DATABASE_URL_CONTAINER=postgresql://jungle_runtime:$runtime@postgres:5432/jungle
+          AWS_ACCESS_KEY_ID=ci-emulator
+          AWS_SECRET_ACCESS_KEY=ci-emulator
           EOF
           cat > .env.test <<EOF
           DATABASE_ADMIN_URL=postgresql://jungle_admin:$admin@127.0.0.1:55433/jungle_test
           DATABASE_URL=postgresql://jungle_runtime:$runtime@127.0.0.1:55433/jungle_test
           DATABASE_RUNTIME_PASSWORD=$runtime
           TEST_DATABASE_DISPOSABLE=yes
+          SQS_ENDPOINT=http://127.0.0.1:4566
+          SQS_REGION=us-east-1
+          SQS_COMMAND_QUEUE=wager-transactions-test.fifo
+          SQS_DEAD_LETTER_QUEUE=wager-transactions-test-dlq.fifo
+          AWS_ACCESS_KEY_ID=ci-emulator
+          AWS_SECRET_ACCESS_KEY=ci-emulator
           EOF
 
-      - name: Subir PostgreSQL descartável
-        run: docker compose -f compose.yml --profile test up -d --wait postgres-test
+      - name: Subir PostgreSQL e emulador SQS descartáveis
+        run: docker compose -f compose.yml --profile test up -d --wait postgres-test sqs
+
+      - run: bun --env-file=.env.test run sqs:provision
 
       - run: bun --env-file=.env.test run db:provision
       - run: bun --env-file=.env.test run db:migrate
@@ -129,9 +142,9 @@ jobs:
           bun --env-file=.env.test run db:migrate
           bun --env-file=.env.test run db:status
 
-      - name: Logs do PostgreSQL
+      - name: Logs do PostgreSQL e do emulador SQS
         if: failure()
-        run: docker compose -f compose.yml --profile test logs --tail=200 postgres-test
+        run: docker compose -f compose.yml --profile test logs --tail=200 postgres-test sqs
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -143,7 +156,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Encerrar PostgreSQL
+      - name: Encerrar PostgreSQL e emulador SQS
         if: always()
         run: docker compose -f compose.yml --profile test down
 

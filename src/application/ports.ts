@@ -21,7 +21,22 @@ export interface Identity {
   readonly payloadHash: string;
 }
 
+/** Identidade da entrega na fila; a deduplicação é por consumidor e messageId do envelope. */
+export interface InboxDelivery {
+  readonly consumerName: string;
+  readonly messageId: string;
+  readonly payloadHash: string;
+}
+
+export interface InboxRecord {
+  readonly payloadHash: string;
+  readonly transactionId: string | null;
+}
+
 export interface FinancialSession {
+  /** Grava a entrega; devolve o registro anterior quando a mensagem já foi recebida. */
+  receiveInbox(delivery: InboxDelivery, at: string): Promise<InboxRecord | null>;
+  completeInbox(delivery: InboxDelivery, transactionId: string, at: string): Promise<void>;
   reserve(identity: Identity): Promise<Identity | null>;
   result(transactionId: string): Promise<TransactionResult>;
   walletForUpdate(walletId: string): Promise<Wallet>;

@@ -28,3 +28,11 @@ export const ledgerQuerySchema = z.object({
 }).strict();
 
 export const cursorSchema = z.object({ walletId: uuid, at: z.string().datetime(), id: uuid }).strict();
+
+// Envelope da fila de comandos (§10). data repete o contrato HTTP e traz a chave de idempotência, que no HTTP vem do header.
+export const wagerMessageSchema = z.object({
+  messageId: identifier,
+  type: z.literal('WagerTransactionRequested'),
+  occurredAt: z.iso.datetime(),
+  data: z.looseObject({ idempotencyKey: identifier }),
+}).strict();
