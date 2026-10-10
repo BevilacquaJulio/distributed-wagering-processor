@@ -2,10 +2,10 @@ import { Body, Controller, Get, Headers, HttpCode, Inject, Param, Post, Query, R
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { SQSClient } from '@aws-sdk/client-sqs';
 import type { MessagingConfig } from '../config';
-import type { FinancialQueries } from '../application/ports';
+import type { Backlog, FinancialQueries } from '../application/ports';
 import { WageringService } from '../application/wagering-service';
 import { cursorSchema, identifier, ledgerQuerySchema, openWalletSchema, uuid, wagerSchema } from '../contracts/requests';
-import { logEvent, Metrics, requestContext } from '../infrastructure/observability';
+import { type Gauge, logEvent, Metrics, requestContext } from '../infrastructure/observability';
 import { SCHEMA_VERSION } from '../infrastructure/postgres/config';
 import { assertQueueReachable, queueUrl } from '../infrastructure/sqs/client';
 import { InvalidRequest } from './error-filter';
@@ -99,6 +99,7 @@ export class HealthController {
     @Inject(SQS) private readonly sqs: SQSClient,
     @Inject(MESSAGING) private readonly messaging: MessagingConfig,
     @Inject(Metrics) private readonly metrics: Metrics,
+    @Inject(QUERIES) private readonly queries: FinancialQueries,
   ) {}
 
   @Get('health/live')
@@ -128,5 +129,27 @@ export class HealthController {
   }
 
   @Get('metrics')
-  metricsEndpoint(@Res() response: HttpResponse) { response.type('text/plain; version=0.0.4').send(this.metrics.render()); }
+  async metricsEndpoint(@Res() response: HttpResponse) {
+    response.type('text/plain; version=0.0.4').send(this.metrics.render(await this.backlogGauges()));
+  }
+
+  // Backlog vem do banco e vale para o sistema todo, não só para este processo; sem banco, só o indicador de falha.
+  private async backlogGauges(): Promise<Gauge[]> {
+    let backlog: Backlog;
+    try {
+      backlog = await this.queries.backlog();
+    } catch {
+      return [{ name: 'wagering_backlog_scrape_success', help: 'Whether the database backlog could be read.', value: 0 }];
+    }
+    return [
+      { name: 'wagering_backlog_scrape_success', help: 'Whether the database backlog could be read.', value: 1 },
+      { name: 'outbox_pending_events', help: 'Outbox events not yet published.', value: backlog.outboxPending },
+      { name: 'outbox_oldest_pending_age_seconds', help: 'Age of the oldest unpublished outbox event (outbox lag).',
+        value: Math.max(0, backlog.outboxOldestPendingSeconds) },
+      { name: 'pending_references_open', help: 'Transactions waiting for their reference.', value: backlog.pendingReferencesOpen },
+      { name: 'pending_references_oldest_age_seconds', help: 'Age of the oldest transaction waiting for its reference.',
+        value: Math.max(0, backlog.pendingReferencesOldestSeconds) },
+      { name: 'pending_references_overdue', help: 'Open pending references past their deadline.', value: backlog.pendingReferencesOverdue },
+    ];
+  }
 }

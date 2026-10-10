@@ -15,3 +15,9 @@ export async function queueUrl(sqs: SQSClient, name: string, signal?: AbortSigna
 export async function assertQueueReachable(sqs: SQSClient, url: string, signal?: AbortSignal): Promise<void> {
   await sqs.send(new GetQueueAttributesCommand({ QueueUrl: url, AttributeNames: ['QueueArn'] }), signal ? { abortSignal: signal } : {});
 }
+
+export async function queueDepth(sqs: SQSClient, url: string, signal?: AbortSignal): Promise<number> {
+  const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: url, AttributeNames: ['ApproximateNumberOfMessages'] }),
+    signal ? { abortSignal: signal } : {});
+  return Number(Attributes?.ApproximateNumberOfMessages ?? 0);
+}

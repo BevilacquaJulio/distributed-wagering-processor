@@ -36,6 +36,8 @@ services:
       SQS_COMMAND_QUEUE: ${SQS_COMMAND_QUEUE:-wager-transactions.fifo}
       SQS_DEAD_LETTER_QUEUE: ${SQS_DEAD_LETTER_QUEUE:-wager-transactions-dlq.fifo}
       SQS_EVENT_QUEUE: ${SQS_EVENT_QUEUE:-wager-events.fifo}
+      # Consumidor, publisher e worker expõem /metrics só na rede interna do Compose (9101, 9102, 9103).
+      METRICS_HOST: 0.0.0.0
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?Defina AWS_ACCESS_KEY_ID em .env}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?Defina AWS_SECRET_ACCESS_KEY em .env}
     ports:
@@ -91,6 +93,7 @@ services:
     command: ["bun", "dist/reference-worker.js"]
     environment:
       DATABASE_URL: ${DATABASE_URL_CONTAINER:?Defina DATABASE_URL_CONTAINER em .env}
+      METRICS_HOST: 0.0.0.0
     depends_on:
       postgres:
         condition: service_healthy

@@ -257,7 +257,7 @@ describe('workers concorrentes e falhas', () => {
 describe('processo do worker', () => {
   // Windows não entrega SIGTERM a handlers; a CI em Linux executa este caso com o processo real.
   test.skipIf(process.platform === 'win32')('SIGTERM encerra com código 0 depois da resolução em andamento', async () => {
-    const child = Bun.spawn([process.execPath, '--no-env-file', 'src/reference-worker.ts'], { env: process.env, stdout: 'pipe', stderr: 'pipe' });
+    const child = Bun.spawn([process.execPath, '--no-env-file', 'src/reference-worker.ts'], { env: { ...process.env, METRICS_PORT: '0' }, stdout: 'pipe', stderr: 'pipe' });
     const reader = child.stdout.getReader();
     let output = '';
     while (!output.includes('reference_worker_started')) {
