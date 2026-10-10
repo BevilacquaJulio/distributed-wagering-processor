@@ -1,99 +1,172 @@
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { z } from 'zod';
-import { errorMessage, failureMessage, type Kind, kinds, openWallet, type OperationInput, operationInputSchema, referencePolicy,
-  type Submission, submitWager, type Wallet, type WagerResult, walletInputSchema } from './api';
+import { errorMessage, failureMessage, isReversal, type Kind, kinds, type OperationInput, operationInputSchema, referenceableKinds,
+  referencePolicy, type Submission, submitWager, type Wallet, type WagerResult } from './api';
+import type { HelpTopic } from './help';
+import { type SentOperation, StatusBadge } from './history';
+import { CopyButton, Field, Heading, InfoButton } from './ui';
 
-export function WalletForm({ onCreated }: { onCreated(wallet: Wallet): void }) {
-  const form = useForm<z.infer<typeof walletInputSchema>>({ resolver: zodResolver(walletInputSchema), defaultValues: { playerId: '', amount: '100.00' } });
-  const mutation = useMutation({ mutationFn: openWallet, onSuccess: onCreated, retry: false });
-  return <form onSubmit={form.handleSubmit((fields) => mutation.mutate(fields))} className="space-y-4">
-    <label>Jogador <span className="hint">UUID</span><input {...form.register('playerId')} aria-invalid={!!form.formState.errors.playerId} placeholder="ID do jogador" /></label>
-    <button type="button" className="link-button" onClick={() => form.setValue('playerId', crypto.randomUUID(), { shouldValidate: true })}>Gerar ID de teste</button>
-    <label>Saldo inicial · BRL<input {...form.register('amount')} inputMode="decimal" aria-invalid={!!form.formState.errors.amount} /></label>
-    <p role="alert" className="error">{form.formState.errors.playerId?.message || form.formState.errors.amount?.message}</p>
-    <button type="submit" disabled={mutation.isPending} className="primary w-full">{mutation.isPending ? 'Criando…' : 'Criar wallet'}</button>
-    {mutation.isError && <p role="alert" className="error">{errorMessage(mutation.error)}</p>}
-  </form>;
+const kindLabels: Record<Kind, string> = {
+  BET: 'BET · aposta (debita)', WIN: 'WIN · prêmio (credita)', LOSS: 'LOSS · perda (não movimenta)',
+  REFUND: 'REFUND · estorno de uma BET', ROLLBACK: 'ROLLBACK · desfaz BET, WIN ou REFUND',
+};
+const httpStatus: Record<WagerResult['status'], number> = { PROCESSED: 200, PENDING_REFERENCE: 202, REJECTED: 422, PENDING: 202 };
+function resultTone(result: WagerResult | undefined): string {
+  if (!result || result.status === 'REJECTED') return 'rejected';
+  return result.status === 'PROCESSED' ? '' : 'waiting';
 }
 
-const kindLabels: Record<Kind, string> = { BET: 'BET · aposta', WIN: 'WIN · prêmio', LOSS: 'LOSS · perda', REFUND: 'REFUND · estorno', ROLLBACK: 'ROLLBACK · reversão' };
-const statusTitles: Record<WagerResult['status'], string> = {
-  PROCESSED: 'Operação processada', REJECTED: 'Operação rejeitada', PENDING: 'Operação pendente', PENDING_REFERENCE: 'Aguardando a operação referenciada',
+const statusExplanation: Record<WagerResult['status'], string> = {
+  PROCESSED: 'Gravada e aplicada ao saldo e ao extrato.',
+  PENDING_REFERENCE: 'A operação referenciada ainda não foi encontrada. O saldo não mudou; o worker processa assim que ela chegar, ou rejeita após 24h.',
+  REJECTED: 'Recusada por uma regra de negócio. A rejeição fica gravada e o saldo não mudou.',
+  PENDING: 'Recebida e ainda sem resultado final.',
 };
 
-function newIdentity(): Pick<OperationInput, 'externalTransactionId' | 'idempotencyKey'> {
-  const id = crypto.randomUUID();
-  return { externalTransactionId: id, idempotencyKey: `provider-a:${id}` };
+function newIdentity(kind: Kind): Pick<OperationInput, 'externalTransactionId' | 'idempotencyKey'> {
+  const externalTransactionId = `${kind.toLowerCase()}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+  return { externalTransactionId, idempotencyKey: `key-${externalTransactionId}` };
 }
 
-function newOperation(kind: Kind = 'BET', reference = ''): OperationInput {
-  return { kind, providerId: 'provider-a', ...newIdentity(), roundId: 'round-1', gameId: 'game-1',
-    amount: kind === 'LOSS' ? '0.00' : '25.00', reference };
+function newOperation(kind: Kind = 'BET'): OperationInput {
+  return { kind, providerId: 'provider-a', ...newIdentity(kind), roundId: 'round-1', gameId: 'game-1', amount: kind === 'LOSS' ? '0.00' : '25.00', reference: '' };
 }
 
-function ResultCard({ result }: Readonly<{ result: WagerResult }>) {
-  return <div className={`result ${result.status === 'REJECTED' ? 'rejected' : ''}`} aria-live="polite">
-    <strong>{statusTitles[result.status]}</strong>
-    <p>{result.idempotentReplay ? 'Replay: resultado persistido, sem nova movimentação.' : 'Resposta recebida do processador.'}</p>
-    {result.status === 'PENDING_REFERENCE' && <p>Aceita com HTTP 202: ainda não é resultado financeiro final. Ela será processada quando a referência for confirmada.</p>}
-    {result.failureCode && <p>{failureMessage(result.failureCode)}</p>}
-    {result.balance && <p>Saldo observado nesta resposta: <b className="money">{result.balance.amount} {result.balance.currency}</b></p>}
-    <p className="mono break-all">{result.transactionId}</p>
-  </div>;
+function ResultPanel({ sent, onLookup }: Readonly<{ sent: SentOperation | undefined; onLookup(providerId: string, externalId: string): void }>) {
+  const result = sent?.result;
+  return <section className="panel" aria-live="polite">
+    <Heading eyebrow="Último envio" title="Resultado" topic="result" />
+    {!sent && <p className="muted">Envie uma operação para ver aqui o status, o ID externo e o saldo observado.</p>}
+    {sent && <div className={`result ${resultTone(result)}`}>
+      <div className="result-head">
+        <span className="kind-tag">{sent.fields.kind}</span><StatusBadge operation={sent} />
+        {result && <span className="muted text-xs">HTTP {httpStatus[result.status]}</span>}
+        {result?.idempotentReplay && <span className="badge badge-neutral">Replay</span>}
+      </div>
+      {result && <p>{result.idempotentReplay ? 'Resultado já gravado devolvido sem nova movimentação. ' : ''}{statusExplanation[result.status]}</p>}
+      {result?.failureCode && <p className="font-semibold">{failureMessage(result.failureCode)} <span className="mono">({result.failureCode})</span></p>}
+      {sent.error && <p className="font-semibold">{sent.error}</p>}
+      <dl className="result-grid">
+        <dt>ID externo</dt>
+        <dd className="fact-id"><span className="mono truncate">{sent.fields.externalTransactionId}</span><CopyButton value={sent.fields.externalTransactionId} label="ID externo" /></dd>
+        {result?.balance && <><dt>Saldo observado</dt><dd className="money">{result.balance.amount} {result.balance.currency}</dd></>}
+        {result && <><dt>ID interno</dt><dd className="mono break-all muted">{result.transactionId}</dd></>}
+      </dl>
+      {result?.status === 'PENDING_REFERENCE' && <button type="button" className="mt-2" onClick={() => onLookup(sent.fields.providerId, sent.fields.externalTransactionId)}>
+        Consultar estado atual</button>}
+    </div>}
+  </section>;
 }
 
-export function OperationForm({ wallet }: Readonly<{ wallet: Wallet }>) {
+/** Operações desta sessão que o tipo escolhido pode referenciar; o servidor continua sendo quem valida. */
+function suggestionsFor(kind: Kind, providerId: string, history: SentOperation[]): SentOperation[] {
+  const seen = new Set<string>();
+  return [...history].reverse().filter((item) => {
+    if (seen.has(item.fields.externalTransactionId)) return false;
+    seen.add(item.fields.externalTransactionId);
+    return item.result !== undefined && item.result.status !== 'REJECTED' && item.fields.providerId === providerId
+      && referenceableKinds[kind].includes(item.fields.kind);
+  }).slice(0, 4);
+}
+
+export function OperationForm({ wallet, history, onSent, onLookup, side }: Readonly<{
+  wallet: Wallet; history: SentOperation[]; onSent(operation: Omit<SentOperation, 'seq'>): void;
+  onLookup(providerId: string, externalId: string): void; side: ReactNode;
+}>) {
   const queryClient = useQueryClient();
   const [last, setLast] = useState<Submission | null>(null);
   const form = useForm<OperationInput>({ resolver: zodResolver(operationInputSchema), defaultValues: newOperation() });
-  const kind = form.watch('kind');
+  const [kind, providerId, reference] = form.watch(['kind', 'providerId', 'reference']);
   const policy = referencePolicy[kind];
-  const mutation = useMutation({ mutationFn: submitWager, retry: false, onSettled: async (_data, _error, submission) => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['wallet', submission.wallet.id] }),
-      queryClient.invalidateQueries({ queryKey: ['ledger', submission.wallet.id] }),
-    ]);
-  } });
-  const fields: { name: Exclude<keyof OperationInput, 'kind'>; label: string; wide?: boolean }[] = [
-    { name: 'amount', label: 'Valor · BRL' }, { name: 'providerId', label: 'Provedor' },
-    ...(policy === 'forbidden' ? [] : [{ name: 'reference' as const, label: `ID externo referenciado${policy === 'optional' ? ' (opcional)' : ''}`, wide: true }]),
-    { name: 'externalTransactionId', label: 'ID externo', wide: true }, { name: 'idempotencyKey', label: 'Chave de idempotência', wide: true },
-    { name: 'roundId', label: 'Rodada' }, { name: 'gameId', label: 'Jogo' },
-  ];
-  return <section className="panel">
-    <div className="section-heading"><div><p className="eyebrow">Operação financeira</p><h2>Enviar operação</h2></div><span className="tag">{kind}</span></div>
-    <form onSubmit={form.handleSubmit((values) => {
-      const submission = structuredClone({ wallet, fields: values });
-      setLast(submission); mutation.mutate(submission);
-      // O próximo envio de negócio usa identidade nova; repetir a anterior é só pelo reenvio controlado.
-      const identity = newIdentity();
-      form.setValue('externalTransactionId', identity.externalTransactionId);
-      form.setValue('idempotencyKey', identity.idempotencyKey);
-    })}>
-      <fieldset disabled={mutation.isPending} className="grid gap-4 sm:grid-cols-2">
-        <label className="sm:col-span-2">Tipo<select {...form.register('kind', { onChange: (event) => {
-          form.reset(newOperation(event.target.value as Kind, form.getValues('reference'))); mutation.reset();
-        } })}>{kinds.map((value) => <option key={value} value={value}>{kindLabels[value]}</option>)}</select></label>
-        {fields.map(({ name, label, wide }) => <label key={name} className={wide ? 'sm:col-span-2' : ''}>
-          {label}<input {...form.register(name)} inputMode={name === 'amount' ? 'decimal' : 'text'} aria-invalid={!!form.formState.errors[name]} />
-          {form.formState.errors[name] && <span role="alert" className="error">{form.formState.errors[name]?.message}</span>}
-        </label>)}
-        <div className="flex flex-wrap gap-3 sm:col-span-2 mt-2">
-          <button type="submit" className="primary">{mutation.isPending ? 'Enviando…' : 'Enviar operação'}</button>
-          <button type="button" onClick={() => { form.reset(newOperation(kind)); setLast(null); mutation.reset(); }}>Nova operação</button>
-          {last && policy !== 'forbidden' && <button type="button" onClick={() => form.setValue('reference', last.fields.externalTransactionId, { shouldValidate: true })}>
-            Referenciar o último envio</button>}
-        </div>
-        <p className="hint sm:col-span-2">Cada envio usa um ID externo e uma chave novos. Para testar replay, use o reenvio controlado; para testar conflito, cole a chave do último envio e altere os dados.</p>
-      </fieldset>
-    </form>
-    {last && <div className="replay-strip"><div><strong>Reenvio controlado</strong><p>Repete os dados e a chave do último envio ({last.fields.kind}).</p>
-      <p className="mono break-all">ID externo: {last.fields.externalTransactionId}</p></div>
-      <button type="button" disabled={mutation.isPending} onClick={() => mutation.mutate(last)}>Reenviar mesma operação</button></div>}
-    {mutation.isError && <p role="alert" className="error mt-4">{errorMessage(mutation.error)}</p>}
-    {mutation.data && <ResultCard result={mutation.data} />}
-  </section>;
+  const errors = form.formState.errors;
+  const mutation = useMutation({
+    mutationFn: ({ submission }: { submission: Submission; replay: boolean }) => submitWager(submission), retry: false,
+    onSettled: async (data, error, { submission, replay }) => {
+      onSent({ walletId: submission.wallet.id, fields: submission.fields, at: new Date().toISOString(), replay,
+        result: data, error: error ? errorMessage(error) : undefined });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['wallet', submission.wallet.id] }),
+        queryClient.invalidateQueries({ queryKey: ['ledger', submission.wallet.id] }),
+      ]);
+    },
+  });
+  const lastSent = history.at(-1);
+  const suggestions = policy === 'forbidden' ? [] : suggestionsFor(kind, providerId, history);
+  const internalMatch = reference ? history.find((item) => item.result?.transactionId === reference.trim()) : undefined;
+
+  function changeKind(next: Kind) {
+    const current = form.getValues();
+    let amount = current.amount;
+    if (next === 'LOSS') amount = '0.00';
+    else if (kind === 'LOSS') amount = '25.00';
+    form.reset({ ...current, kind: next, amount, reference: referencePolicy[next] === 'forbidden' ? '' : current.reference, ...newIdentity(next) });
+  }
+
+  function applyReference(item: SentOperation) {
+    form.setValue('reference', item.fields.externalTransactionId, { shouldValidate: true });
+    form.setValue('roundId', item.fields.roundId, { shouldValidate: true });
+    if (isReversal(kind)) form.setValue('amount', item.fields.amount, { shouldValidate: true });
+  }
+
+  const text = (name: Exclude<keyof OperationInput, 'kind'>, label: string, topic: HelpTopic, className = '') =>
+    <Field id={`op-${name}`} label={label} topic={topic} error={errors[name]?.message} className={className}>
+      <input id={`op-${name}`} {...form.register(name)} inputMode={name === 'amount' ? 'decimal' : 'text'} aria-invalid={!!errors[name]}
+        autoComplete="off" spellCheck={false} />
+    </Field>;
+
+  return <div className="operate-grid">
+    <section className="panel">
+      <Heading eyebrow="Passo 2" title="Enviar operação" topic="kind" />
+      <form noValidate onSubmit={form.handleSubmit((values) => {
+        const submission = structuredClone({ wallet, fields: values });
+        setLast(submission);
+        mutation.mutate({ submission, replay: false });
+        // O próximo envio de negócio usa identidade nova; repetir a anterior é só pelo reenvio controlado.
+        const identity = newIdentity(values.kind);
+        form.setValue('externalTransactionId', identity.externalTransactionId);
+        form.setValue('idempotencyKey', identity.idempotencyKey);
+      })}>
+        <fieldset disabled={mutation.isPending} className="form-grid">
+          <Field id="op-kind" label="Tipo" topic="kind" className="col-span-full">
+            <select id="op-kind" {...form.register('kind', { onChange: (event) => { changeKind(event.target.value as Kind); mutation.reset(); } })}>
+              {kinds.map((value) => <option key={value} value={value}>{kindLabels[value]}</option>)}
+            </select>
+          </Field>
+          {text('amount', `Valor · ${wallet.balance.currency}`, 'amount')}
+          {text('providerId', 'Provedor', 'provider')}
+          {policy !== 'forbidden' && <div className="col-span-full reference-box">
+            {text('reference', `ID externo referenciado${policy === 'optional' ? ' (opcional)' : ''}`, 'reference')}
+            {internalMatch && <p role="alert" className="warning">
+              Isto é o ID interno de uma {internalMatch.fields.kind}. A referência usa o ID externo:{' '}
+              <button type="button" className="text-button" onClick={() => applyReference(internalMatch)}>usar {internalMatch.fields.externalTransactionId}</button>
+            </p>}
+            {suggestions.length > 0
+              ? <div className="suggestions"><span className="muted text-xs">Referenciar uma operação desta sessão{isReversal(kind) ? ' (copia valor e rodada)' : ' (copia a rodada)'}:</span>
+                <div className="chips">{suggestions.map((item) => <button key={item.seq} type="button" className="chip" onClick={() => applyReference(item)}>
+                  <b>{item.fields.kind}</b> {item.fields.amount} · <span className="mono">{item.fields.externalTransactionId}</span>
+                </button>)}</div></div>
+              : <p className="muted text-xs">Nenhuma operação compatível enviada nesta sessão. Envie a {referenceableKinds[kind].join(', ')} primeiro ou digite o ID externo dela.</p>}
+          </div>}
+          {text('externalTransactionId', 'ID externo', 'externalId')}
+          {text('idempotencyKey', 'Chave de idempotência', 'idempotencyKey')}
+          {text('roundId', 'Rodada', 'round')}
+          {text('gameId', 'Jogo', 'game')}
+          <div className="col-span-full form-actions">
+            <button type="submit" className="primary">{mutation.isPending ? 'Enviando…' : 'Enviar operação'}</button>
+            {last && <span className="inline-flex items-center gap-1">
+              <button type="button" onClick={() => mutation.mutate({ submission: last, replay: true })}>Reenviar a última ({last.fields.kind})</button>
+              <InfoButton topic="replay" />
+            </span>}
+            <button type="button" className="text-button ml-auto" onClick={() => { form.reset(newOperation(kind)); mutation.reset(); }}>Restaurar padrões</button>
+          </div>
+        </fieldset>
+      </form>
+    </section>
+    <div className="side-stack">
+      <ResultPanel sent={lastSent} onLookup={onLookup} />
+      {side}
+    </div>
+  </div>;
 }

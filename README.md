@@ -18,7 +18,7 @@ Saldo, ledger e eventos corretos mesmo com mensagens duplicadas, fora de ordem, 
 ![SQS](https://img.shields.io/badge/AWS_SQS-MiniStack_1.5.15-ff9900?logo=amazonsqs&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker_Compose-v2-2496ed?logo=docker&logoColor=white)
 
-[Início rápido](#início-rápido) · [Usando o sistema](#usando-o-sistema) · [API](#contrato-da-api) · [Testes](#testes) · [Arquitetura](ARCHITECTURE.md)
+[Início rápido](#início-rápido) · [Usando o sistema](#usando-o-sistema) · [Postman](#pela-api-postman) · [API](#contrato-da-api) · [Testes](#testes) · [Arquitetura](ARCHITECTURE.md)
 
 </div>
 
@@ -236,56 +236,77 @@ Tudo é publicado só em `127.0.0.1`.
 
 ### Pelo painel
 
-Abra o painel (8080 em Docker ou 5173 no host) e siga o roteiro:
+Abra o painel (8080 em Docker ou 5173 no host). A tela é dividida em passos e abas, para que as informações fiquem à vista sem rolagem longa:
 
-1. Gere um jogador e crie uma wallet com `100.00 BRL`.
-2. Envie uma BET de `25.00`: saldo `75.00`, versão 2, crédito OPENING e débito BET no ledger.
-3. **Reenviar mesma operação**: replay, sem novo débito.
-4. **Nova operação** com valor acima do saldo: rejeição auditável `INSUFFICIENT_FUNDS`, saldo intacto.
-5. **REFUND** de `10.00` com ID externo referenciado `bet-futura-1`: resposta 202 `PENDING_REFERENCE`.
-6. **Nova operação**: BET de `10.00` com ID externo `bet-futura-1`. Consulte o REFUND, que passa a `PROCESSED` em cerca de 1s, resolvido pelo worker.
-7. **LOSS** com `0.00`: saldo e versão não mudam.
-8. **Conferir saldo**: diferença `0.00` entre saldo e ledger.
+1. **Wallet:** crie uma wallet (gere um jogador e defina o saldo inicial) ou reabra uma das wallets recentes deste navegador. O saldo, a versão, o ID da wallet e o ID do jogador ficam numa barra fixa no topo, com botão de copiar.
+2. **Operar:** escolha o tipo (BET, WIN, LOSS, REFUND ou ROLLBACK) e envie. O resultado aparece ao lado, com o **ID externo** pronto para copiar, e a lista "Enviadas nesta sessão" guarda cada envio.
+3. **Consultar** e **Extrato:** abas para ler o estado gravado de uma transação, o ledger e a conferência entre saldo e ledger.
 
-### Pela API (PowerShell)
+Cada campo e cada seção tem um botão **i**. Ele abre uma explicação com o que é o campo, o valor padrão, se pode ser alterado, as regras que o servidor aplica e os erros mais comuns. Comece pelo "Como funciona", no topo.
 
-Os exemplos funcionam no PowerShell 5.1 e no 7. `Send-Wager` devolve o corpo também nas respostas 4xx, para você ver o `failureCode`.
+Para REFUND, ROLLBACK e WIN, o campo de referência sugere as operações compatíveis enviadas na sessão. Um clique preenche o ID externo e, nas reversões, também o valor e a rodada, que precisam ser iguais aos da operação referenciada. Se um ID interno for colado nesse campo, o painel avisa e oferece o ID externo correspondente.
 
-```powershell
-$base = 'http://127.0.0.1:3000'
+Roteiro sugerido:
 
-$wallet = Invoke-RestMethod -Method Post "$base/wallets" -ContentType 'application/json' -Body (@{
-  playerId       = [guid]::NewGuid().ToString()
-  initialBalance = @{ amount = '100.00'; currency = 'BRL' }
-} | ConvertTo-Json)
+1. Crie uma wallet com `100.00`.
+2. Envie uma BET de `25.00`: saldo `75.00`, versão 2.
+3. **Reenviar a última**: o resultado vem marcado como replay, sem novo débito.
+4. Envie uma BET acima do saldo: rejeição `INSUFFICIENT_FUNDS`, saldo intacto.
+5. Troque para REFUND, clique na sugestão da primeira BET e envie: saldo `100.00`.
+6. REFUND com ID externo referenciado `bet-futura-1` (digitado) e valor `10.00`: resposta 202, aguardando referência.
+7. BET de `10.00` com ID externo `bet-futura-1`. Em **Enviadas nesta sessão**, clique em **Consultar** no REFUND: ele passa a processado em cerca de 1s, resolvido pelo worker.
+8. Na aba **Extrato**, use **Conferir saldo**: diferença `0.00`.
 
-function Send-Wager([string]$Kind, [string]$Amount, [string]$ExternalId, [string]$Reference) {
-  $body = @{
-    providerId = 'provider-a'; externalTransactionId = $ExternalId; playerId = $wallet.playerId; walletId = $wallet.id
-    roundId = 'round-1'; gameId = 'game-1'; kind = $Kind; money = @{ amount = $Amount; currency = 'BRL' }
-  }
-  if ($Reference) { $body.referenceExternalTransactionId = $Reference }
-  try {
-    Invoke-RestMethod -Method Post "$base/wagering/transactions" -ContentType 'application/json' `
-      -Headers @{ 'Idempotency-Key' = "key-$ExternalId" } -Body ($body | ConvertTo-Json)
-  } catch {
-    $_.ErrorDetails.Message | ConvertFrom-Json
-  }
-}
+### Pela API (Postman)
 
-$run = [guid]::NewGuid().ToString('N').Substring(0, 6)   # IDs novos a cada execução do roteiro
+Para testar a API fora do painel, use o Postman. Crie uma collection e, na aba **Variables** dela, defina `base` = `http://127.0.0.1:3000`. Todo request que envia corpo usa **Body → raw → JSON**.
 
-Send-Wager BET '25.00' "bet-$run-1" | ConvertTo-Json                    # PROCESSED, saldo 75.00
-Send-Wager BET '25.00' "bet-$run-1" | ConvertTo-Json                    # replay: mesmo resultado, idempotentReplay true
-Send-Wager BET '500.00' "bet-$run-2" | ConvertTo-Json                   # REJECTED, INSUFFICIENT_FUNDS
-Send-Wager REFUND '10.00' "refund-$run" "bet-$run-3" | ConvertTo-Json   # 202 PENDING_REFERENCE
-Send-Wager BET '10.00' "bet-$run-3" | ConvertTo-Json                    # a referência chega; o worker resolve o REFUND
+**1. Criar a wallet.** `POST {{base}}/wallets`
 
-Invoke-RestMethod "$base/wallets/$($wallet.id)" | ConvertTo-Json
-Invoke-RestMethod "$base/wallets/$($wallet.id)/ledger?limit=50" | ConvertTo-Json -Depth 5
-Invoke-RestMethod "$base/providers/provider-a/wagering/transactions/refund-$run" | ConvertTo-Json -Depth 5
-Invoke-RestMethod -Method Post "$base/wallets/$($wallet.id)/reconciliation" | ConvertTo-Json
+```json
+{ "playerId": "{{$guid}}", "initialBalance": { "amount": "100.00", "currency": "BRL" } }
 ```
+
+`{{$guid}}` faz o Postman gerar um UUID novo. A resposta 201 traz `id` (a wallet) e `playerId`: crie as variáveis `walletId` e `playerId` com esses valores.
+
+**2. Enviar operações.** `POST {{base}}/wagering/transactions`, com o header `Idempotency-Key` e o corpo:
+
+```json
+{
+  "providerId": "provider-a",
+  "externalTransactionId": "bet-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-1",
+  "gameId": "game-1",
+  "kind": "BET",
+  "money": { "amount": "25.00", "currency": "BRL" }
+}
+```
+
+Envie em sequência, trocando só o que a tabela indica. Os IDs externos e as chaves precisam ser novos a cada execução do roteiro; troque o sufixo `001` se repetir.
+
+| Passo | `Idempotency-Key` | Mudanças no corpo | Resposta esperada |
+| --- | --- | --- | --- |
+| BET | `key-bet-001` | nenhuma | 200 `PROCESSED`, saldo `75.00` |
+| Mesma BET de novo | `key-bet-001` | nenhuma | 200, mesmo `transactionId`, `idempotentReplay: true`, sem novo débito |
+| Mesma chave, outro valor | `key-bet-001` | `amount` `30.00` | 409 `IDEMPOTENCY_CONFLICT` |
+| BET acima do saldo | `key-bet-002` | `externalTransactionId` `bet-002`, `amount` `500.00` | 422 `REJECTED`, `INSUFFICIENT_FUNDS` |
+| REFUND da BET | `key-refund-001` | `externalTransactionId` `refund-001`, `kind` `REFUND`, `amount` `25.00`, mais `"referenceExternalTransactionId": "bet-001"` | 200 `PROCESSED`, saldo `100.00` |
+| REFUND antes da BET | `key-refund-002` | `externalTransactionId` `refund-002`, `kind` `REFUND`, `amount` `10.00`, `"referenceExternalTransactionId": "bet-003"` | 202 `PENDING_REFERENCE`, saldo intacto |
+| A BET referenciada chega | `key-bet-003` | `externalTransactionId` `bet-003`, `kind` `BET`, `amount` `10.00`, sem referência | 200 `PROCESSED`; o worker resolve o REFUND em cerca de 1s |
+
+**3. Consultar.**
+
+| Request | Para quê |
+| --- | --- |
+| `GET {{base}}/wallets/{{walletId}}` | Saldo e versão atuais (`100.00` ao fim do roteiro). |
+| `GET {{base}}/wallets/{{walletId}}/ledger?limit=50` | Lançamentos, do mais antigo para o mais recente. |
+| `GET {{base}}/providers/provider-a/wagering/transactions/refund-002` | Estado gravado do REFUND antecipado: `PROCESSED`, com `referenceTransactionId` preenchido. |
+| `GET {{base}}/wagering/transactions/<transactionId>` | A mesma consulta pelo ID interno devolvido no envio. |
+| `POST {{base}}/wallets/{{walletId}}/reconciliation` | `consistent: true` e diferença `0.00` entre saldo e ledger. |
+
+Erros de formato respondem 400, com `{ "error": { "code", "message", "requestId" } }`. A referência é sempre o **ID externo** da outra operação, nunca o `transactionId` interno.
 
 ### Pela fila SQS
 
