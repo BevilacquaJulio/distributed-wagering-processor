@@ -31,6 +31,7 @@ services:
       DATABASE_URL: ${DATABASE_URL_CONTAINER:?Defina DATABASE_URL_CONTAINER em .env}
       HOST: 0.0.0.0
       PORT: 3000
+      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-true}
       SQS_ENDPOINT: ${SQS_ENDPOINT_CONTAINER:-http://sqs:4566}
       SQS_REGION: ${SQS_REGION:-us-east-1}
       SQS_COMMAND_QUEUE: ${SQS_COMMAND_QUEUE:-wager-transactions.fifo}
@@ -101,6 +102,24 @@ services:
       disable: true
     init: true
     stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  # Painel de testes; /api encaminha para a API pela rede interna, sem expor outra origem ao navegador.
+  web:
+    image: jungle-wagering-web:local
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
     read_only: true
     tmpfs:
       - /tmp

@@ -6,12 +6,12 @@ Provedores de jogos enviam apostas e resultados por HTTP ou pela fila SQS; o sis
 
 | Processo | Comando | Papel |
 | --- | --- | --- |
-| API | `bun run dev` | HTTP, consultas, reconciliação, health e métricas. |
+| API | `bun run dev` | HTTP, consultas, reconciliação, health, métricas e documentação Swagger em `/docs`. |
 | Consumidor | `bun run consumer` | Comandos da fila `wager-transactions.fifo`, com inbox e DLQ. |
 | Publisher | `bun run publisher` | Entrega da outbox à fila `wager-events.fifo`. |
 | Worker de referências | `bun run reference-worker` | Reavaliação e expiração de operações `PENDING_REFERENCE`. |
 
-Todos usam o mesmo caso de uso financeiro e podem rodar em várias instâncias. O painel React (`bun run dev:web`) serve para testes manuais contra a API real. Não há autenticação de provedores nesta versão (ver ARCHITECTURE.md); API, Vite e portas de banco usam loopback no host.
+Todos usam o mesmo caso de uso financeiro e podem rodar em várias instâncias. O painel React serve para testes manuais contra a API real: em Docker no serviço `web` (http://127.0.0.1:8080) ou no host com `bun run dev:web`. Não há autenticação de provedores nesta versão (ver ARCHITECTURE.md); API, Vite e portas de banco usam loopback no host.
 
 ## Como executar o projeto
 
@@ -95,13 +95,15 @@ Invoke-RestMethod http://127.0.0.1:9101/metrics
 Com PostgreSQL e o emulador no ar, o papel provisionado e as migrations e filas aplicadas manualmente (passos acima):
 
 ```powershell
-docker compose -f compose.yml up -d --build api consumer publisher reference-worker
+docker compose -f compose.yml up -d --build api consumer publisher reference-worker web
 docker compose -f compose.yml ps
-docker compose -f compose.yml logs -f --tail=100 api consumer publisher reference-worker postgres sqs
+docker compose -f compose.yml logs -f --tail=100 api consumer publisher reference-worker web postgres sqs
 docker compose -f compose.yml down
 ```
 
-Parar a API, o consumidor, o publisher e o worker executados no host antes de iniciar os containers. Os serviços `consumer`, `publisher` e `reference-worker` usam a mesma imagem com `bun dist/consumer.js`, `bun dist/publisher.js` e `bun dist/reference-worker.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem, o lote ou a resolução em andamento. Publisher e worker aceitam várias instâncias (`--scale publisher=2`, `--scale reference-worker=2`); o worker só usa PostgreSQL. Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. Nos containers, `/metrics` dos processos fica só na rede interna do Compose, sem porta publicada no host. O painel continua pelo Vite no host. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
+Parar a API, o consumidor, o publisher e o worker executados no host antes de iniciar os containers. Os serviços `consumer`, `publisher` e `reference-worker` usam a mesma imagem com `bun dist/consumer.js`, `bun dist/publisher.js` e `bun dist/reference-worker.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem, o lote ou a resolução em andamento. Publisher e worker aceitam várias instâncias (`--scale publisher=2`, `--scale reference-worker=2`); o worker só usa PostgreSQL. Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. Nos containers, `/metrics` dos processos fica só na rede interna do Compose, sem porta publicada no host.
+
+O serviço `web` (`Dockerfile.web`) constrói o painel com Bun e o serve com nginx sem root em http://127.0.0.1:8080. O nginx encaminha `/api/*` para a API pela rede interna e remove o prefixo, o mesmo contrato do proxy do Vite, então o navegador fala com uma única origem. A configuração (`web/nginx.conf`) aplica CSP restrita, `nosniff`, sem referrer, e reavalia o DNS da API para tolerar a recriação do container. Para desenvolver o painel com recarga automática, continue usando `bun run dev:web` na porta 5173. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
 
 ## Validação
 
@@ -170,6 +172,10 @@ A reversão da migration apaga o histórico e não faz parte do procedimento nor
 9. Enviar **LOSS** com `0.00` e confirmar que saldo e versão não mudam.
 10. Conferir navegação por teclado, foco, mensagens de validação, estados de erro/indisponibilidade e layout móvel. Essa inspeção visual ainda está pendente.
 
+## Documentação da API (Swagger)
+
+Com a API no ar, a interface Swagger fica em http://127.0.0.1:3000/docs e o documento OpenAPI 3.1 em `/docs/openapi.json` (ou `.yaml`). Os schemas das requisições são gerados dos mesmos schemas Zod que validam a API, e os exemplos passam por essa validação. `tests/integration/api-docs.test.ts` confere que toda rota dos controllers está documentada e que as respostas reais correspondem aos schemas publicados. Em ambientes onde a documentação não deve ser pública, `API_DOCS_ENABLED=false` remove as rotas `/docs`.
+
 ## Contrato implementado
 
 | Método/caminho | Comportamento |
@@ -182,6 +188,7 @@ A reversão da migration apaga o histórico e não faz parte do procedimento nor
 | GET `/wallets/:walletId/ledger?limit=50&cursor=...` | Ordem crescente, cursor opaco e limite de 1 a 100. |
 | POST `/wallets/:walletId/reconciliation` | Compara saldo e ledger em snapshot consistente; não corrige divergência. |
 | GET `/health/live`, `/health/ready`, `/metrics` | Liveness, readiness (schema e fila de comandos) e métricas Prometheus com backlog do banco. |
+| GET `/docs`, `/docs/openapi.json`, `/docs/openapi.yaml` | Swagger UI e documento OpenAPI 3.1; desligável com `API_DOCS_ENABLED=false`. |
 
 Money: `{ "amount": "25.00", "currency": "BRL" }`, duas casas obrigatórias, sem sinais/expoentes/espaços/zeros à esquerda. UUIDs identificam jogador e recursos internos. Provedor, ID externo, chave, rodada e jogo aceitam de 1 a 128 caracteres de letras ASCII, números, `.`, `_`, `:`, `-`, começando por letra/número; não há trim ou mudança de caixa. Body JSON tem limite de 16 KiB e rejeita campos desconhecidos.
 
@@ -285,7 +292,7 @@ O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualiza
 | --- | --- |
 | **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit` com cobertura LCOV, `build`, `build:web`. |
 | **Auditoria de dependências** | `bun audit --audit-level=high`; falha com vulnerabilidade alta ou crítica. |
-| **Imagem Docker e Compose** | Valida o `compose.yml` e constrói a imagem da API. |
+| **Imagem Docker e Compose** | Valida o `compose.yml`, constrói as imagens da API e do painel e confere a sintaxe do nginx. |
 | **Integração com PostgreSQL real** | Sobe `postgres-test` e o emulador SQS do Compose com credenciais geradas na execução, cria as filas de teste, provisiona, aplica as migrations, roda `test:integration` (inclui consumidor, publisher, worker de referências, crash dos três e o SIGTERM dos processos reais) com cobertura LCOV e `test:concurrency`, reverte e reaplica a última migration. Publica o log como artefato. |
 | **SonarCloud Quality Gate** | Envia a cobertura de unidade e integração ao SonarCloud e aguarda o Quality Gate (inclui 80% de cobertura no código novo). |
 
@@ -298,7 +305,7 @@ Migrations só são aplicadas no PostgreSQL descartável criado pelo job; nenhum
 ## Operação e atualização
 
 - Dependências: atualizar manifesto somente com escopo definido, instalar/revisar `bun.lock` e reconstruir a imagem da API.
-- Código backend: executar validações pertinentes e `docker compose -f compose.yml up -d --build api consumer publisher reference-worker`.
+- Código backend: executar validações pertinentes e `docker compose -f compose.yml up -d --build api consumer publisher reference-worker web`.
 - Código do painel: executar `typecheck:web`, `lint` e `build:web`; Vite acompanha edições em desenvolvimento.
 - Schema: inspecionar a migration e o alvo, executar `db:status`, `db:migrate`, `db:status`, validar e depois atualizar a API. Nunca migrar no startup.
 - Env de container: `docker compose -f compose.yml up -d --force-recreate api`; `restart` não recarrega env do Compose.

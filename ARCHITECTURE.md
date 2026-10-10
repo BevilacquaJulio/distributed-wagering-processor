@@ -41,11 +41,11 @@ Todos os processos podem rodar em várias instâncias: a coordenação acontece 
 | `src/workers/` | Laço do worker de referências. | Aplicação. |
 | `src/http/` | Controllers e filtro de erros (NestJS). | Aplicação. |
 | `src/bootstrap.ts` | Composição, papel de banco e lifecycle. | Tudo acima. |
-| `web/` | Painel React de testes manuais, que consome a API real. | Somente HTTP. |
+| `web/` | Painel React de testes manuais, que consome a API real; em Docker é servido por nginx (`Dockerfile.web`) com proxy de mesma origem para a API. | Somente HTTP. |
 
 O domínio não importa NestJS, MikroORM, SQL nem SDK da AWS. Classes de domínio têm factories (`submit`, `opening`, `open`) e `rehydrate`, que reconstrói o estado sem reexecutar transições. Os snapshots devolvidos (`toState`) são cópias.
 
-NestJS cuida só da composição HTTP. A injeção usa tokens explícitos e não depende de decorator metadata emitida pelo Bun. Os demais processos montam suas dependências diretamente, sem contêiner.
+NestJS cuida só da composição HTTP. A documentação OpenAPI 3.1 (`src/http/openapi.ts`, servida em `/docs` pelo `@nestjs/swagger`) é gerada dos mesmos schemas Zod que validam as requisições; um teste compara as rotas dos controllers e as respostas reais com o documento. A injeção usa tokens explícitos e não depende de decorator metadata emitida pelo Bun. Os demais processos montam suas dependências diretamente, sem contêiner.
 
 ## Dinheiro
 

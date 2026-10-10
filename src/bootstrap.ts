@@ -4,12 +4,15 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Module, type DynamicModule, type OnApplicationShutdown, Inject, Injectable } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { type OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
 import { MikroORM } from '@mikro-orm/postgresql';
 import type { SQSClient } from '@aws-sdk/client-sqs';
 import { WageringService } from './application/wagering-service';
 import type { MessagingConfig, RuntimeConfig } from './config';
 import { FinancialController, HealthController, MESSAGING, ORM, QUERIES, SQS } from './http/controller';
 import { HttpErrorFilter } from './http/error-filter';
+import { buildOpenApiDocument } from './http/openapi';
+import packageJson from '../package.json' with { type: 'json' };
 import { Sha256PayloadHasher, SystemClock, UnauthenticatedProviderIdentity, UuidGenerator } from './infrastructure/identity';
 import { JsonLogger, Metrics, requestContext } from './infrastructure/observability';
 import { databaseConfig } from './infrastructure/postgres/config';
@@ -72,6 +75,10 @@ export async function createApplication(config: RuntimeConfig, messaging: Messag
     app.useBodyParser('json', { limit: '16kb' });
     app.useGlobalFilters(new HttpErrorFilter(app.get(Metrics)));
     app.enableShutdownHooks();
+    // Antes do init: depois dele o handler de 404 do Nest já estaria registrado na frente destas rotas.
+    if (config.API_DOCS_ENABLED) {
+      SwaggerModule.setup('docs', app, buildOpenApiDocument(packageJson.version) as unknown as OpenAPIObject, { jsonDocumentUrl: 'docs/openapi.json', yamlDocumentUrl: 'docs/openapi.yaml' });
+    }
     await app.init();
     return app;
   } catch (error) {
