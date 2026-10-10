@@ -70,6 +70,9 @@ jobs:
           AWS_ACCESS_KEY_ID: ci-config-only
           AWS_SECRET_ACCESS_KEY: ci-config-only
       - run: docker build --pull -t jungle-wagering-api:ci .
+      - run: docker build --pull -f Dockerfile.web -t jungle-wagering-web:ci .
+      # Sintaxe do nginx do painel, sem subir o serviço nem resolver a API.
+      - run: docker run --rm jungle-wagering-web:ci nginx -t
 
   integracao:
     name: Integração com PostgreSQL real
