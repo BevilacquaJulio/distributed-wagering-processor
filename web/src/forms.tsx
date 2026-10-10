@@ -82,7 +82,8 @@ export function OperationForm({ wallet, history, onSent, onLookup, side }: Reado
   const policy = referencePolicy[kind];
   const errors = form.formState.errors;
   const mutation = useMutation({
-    mutationFn: ({ submission }: { submission: Submission; replay: boolean }) => submitWager(submission), retry: false,
+    mutationFn: ({ submission, replay }: { submission: Submission; replay: boolean }) =>
+      submitWager(submission, `${replay ? 'Reenvio · ' : ''}${submission.fields.kind} ${submission.fields.amount}`), retry: false,
     onSettled: async (data, error, { submission, replay }) => {
       onSent({ walletId: submission.wallet.id, fields: submission.fields, at: new Date().toISOString(), replay,
         result: data, error: error ? errorMessage(error) : undefined });
