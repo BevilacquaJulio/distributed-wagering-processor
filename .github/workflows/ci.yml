@@ -117,6 +117,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Concorrência entre três processos
+        run: bun run test:concurrency 2>&1 | tee concorrencia.log
+
       - name: Reversão e reaplicação da migration
         env:
           ALLOW_DISPOSABLE_DOWN: 'yes'
@@ -134,7 +137,9 @@ jobs:
         if: always()
         with:
           name: integracao-${{ github.sha }}
-          path: integracao.log
+          path: |
+            integracao.log
+            concorrencia.log
           if-no-files-found: ignore
           retention-days: 14
 

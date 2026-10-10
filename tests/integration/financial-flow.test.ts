@@ -1,12 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { MikroORM } from '@mikro-orm/postgresql';
+import type { MikroORM } from '@mikro-orm/postgresql';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { createApplication } from '../../src/bootstrap';
 import { readConfig } from '../../src/config';
 import { WageringService } from '../../src/application/wagering-service';
 import { SystemClock, UuidGenerator, Sha256PayloadHasher, UnauthenticatedProviderIdentity } from '../../src/infrastructure/identity';
-import { databaseConfig } from '../../src/infrastructure/postgres/config';
 import { PostgresQueries } from '../../src/infrastructure/postgres/queries';
 import { PostgresUnitOfWork } from '../../src/infrastructure/postgres/unit-of-work';
 import type { TransactionResult } from '../../src/application/ports';
@@ -14,6 +13,7 @@ import type { BetCommand } from '../../src/domain/wager-transaction';
 import type { WalletState } from '../../src/domain/wallet';
 import type { LedgerState } from '../../src/domain/ledger-entry';
 import { api as panelApi, getWallet as panelGetWallet, submitBet as panelSubmitBet } from '../../web/src/api';
+import { connectDisposableDatabase } from '../support/database';
 
 let orm: MikroORM;
 let app: NestExpressApplication;
@@ -21,14 +21,7 @@ let base: string;
 
 beforeAll(async () => {
   const config = readConfig();
-  const url = new URL(config.DATABASE_URL);
-  if (process.env.TEST_DATABASE_DISPOSABLE !== 'yes' || url.pathname !== '/jungle_test'
-    || !['127.0.0.1', 'localhost', 'postgres-test'].includes(url.hostname)) {
-    throw new Error('Integration requires an explicitly disposable, local jungle_test database');
-  }
-  orm = await MikroORM.init(databaseConfig(config.DATABASE_URL));
-  const version = await orm.em.fork().execute<{ version: number }[]>('select version from schema_version');
-  if (version[0]?.version !== 1) throw new Error('Apply migrations manually before integration');
+  orm = await connectDisposableDatabase(config.DATABASE_URL);
   app = await createApplication(config);
   await app.listen(0, '127.0.0.1');
   base = await app.getUrl();
