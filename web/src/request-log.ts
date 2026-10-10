@@ -29,7 +29,9 @@ function pretty(value: unknown): string | null {
 
 /** Registro só na memória desta aba: mostra o que o painel enviou para ser refeito no Postman. */
 export function recordRequest(label: string, uri: string, config: InternalAxiosRequestConfig, response?: AxiosResponse) {
-  const url = new URL(uri, window.location.origin);
+  // O cliente também roda fora do navegador (teste de integração do painel); lá não há location e a URI já é absoluta.
+  const origin = (globalThis as { location?: { origin?: string } }).location?.origin ?? 'http://localhost';
+  const url = new URL(uri, origin);
   const body = pretty(config.data);
   const headers: [string, string][] = body ? [['Content-Type', 'application/json']] : [];
   const key = config.headers.get('Idempotency-Key');
