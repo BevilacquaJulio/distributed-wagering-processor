@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import { DomainError } from '../domain/errors';
 import { WalletBalanceChanged, WagerTransactionPendingReference, WagerTransactionProcessed, WagerTransactionRejected } from '../domain/events';
 import { Money, type MoneyProps } from '../domain/money';
@@ -5,15 +6,25 @@ import type { LedgerEntry } from '../domain/ledger-entry';
 import { type WagerCommand, WagerTransaction } from '../domain/wager-transaction';
 import { Wallet, type WalletState } from '../domain/wallet';
 import { ApplicationError } from './errors';
-import type { Clock, FinancialSession, FinancialUnitOfWork, IdGenerator, InboxDelivery, PayloadHasher, ProviderIdentityPort, TransactionResult } from './ports';
+import type { Clock, FinancialSession, FinancialUnitOfWork, IdGenerator, InboxDelivery, PayloadHasher, PendingReferenceClaim,
+  ProviderIdentityPort, TransactionResult } from './ports';
 
-/** Política de espera por referência (D07): primeira reavaliação em 1s e expiração em 24h a partir do aceite. */
+/** Política de espera por referência (D07): primeira reavaliação em 1s, backoff até 5min e expiração em 24h a partir do aceite. */
 export interface PendingReferencePolicy {
   readonly firstRetryDelayMs: number;
+  readonly maxRetryDelayMs: number;
   readonly ttlMs: number;
 }
 
-const DEFAULT_PENDING_POLICY: PendingReferencePolicy = { firstRetryDelayMs: 1000, ttlMs: 24 * 60 * 60 * 1000 };
+export const DEFAULT_PENDING_POLICY: PendingReferencePolicy = { firstRetryDelayMs: 1000, maxRetryDelayMs: 5 * 60 * 1000, ttlMs: 24 * 60 * 60 * 1000 };
+
+/** skipped: outro worker assumiu o claim ou a agenda já foi resolvida; nada foi alterado. */
+export type ResolutionOutcome = 'processed' | 'rejected' | 'expired' | 'pending' | 'skipped';
+
+/** Espera após a n-ésima reavaliação sem referência: dobra a partir da primeira espera, sem passar do máximo. */
+export function referenceRetryDelayMs(attempts: number, policy: PendingReferencePolicy): number {
+  return Math.min(policy.maxRetryDelayMs, policy.firstRetryDelayMs * 2 ** attempts);
+}
 
 function later(at: string, milliseconds: number): string {
   return new Date(Date.parse(at) + milliseconds).toISOString();
@@ -93,15 +104,59 @@ export class WageringService {
     await session.insertTransaction(transaction);
 
     if (transaction.status === 'PENDING_REFERENCE') return this.persistPending(session, transaction, wallet, correlationId, at);
+    return this.finish(session, transaction, wallet, entry, correlationId, at);
+  }
 
+  /**
+   * Reavalia uma operação PENDING_REFERENCE com a mesma decisão do envio original, sob o lock da wallet.
+   * Ainda sem referência: reagenda sem novo evento. Prazo vencido: REJECTED com REFERENCE_EXPIRED.
+   */
+  async resolvePending(claim: PendingReferenceClaim, claimToken: string): Promise<ResolutionOutcome> {
+    return this.unitOfWork.run(async (session) => {
+      const wallet = await session.walletForUpdate(claim.walletId);
+      const schedule = await session.lockPendingReference(claim.transactionId, claimToken);
+      if (!schedule) return 'skipped';
+      const transaction = await session.pendingTransaction(claim.transactionId);
+      if (transaction.status !== 'PENDING_REFERENCE') throw new Error('Unresolved schedule without a pending transaction');
+      const at = this.clock.now();
+      const attempts = schedule.attempts + 1;
+      const entry = await this.decide(session, transaction, wallet, at);
+      if (transaction.status === 'PENDING_REFERENCE') {
+        if (Date.parse(at) < Date.parse(schedule.deadlineAt)) {
+          await session.reschedulePendingReference(transaction.id, attempts, this.nextAttempt(at, attempts, schedule.deadlineAt));
+          return 'pending';
+        }
+        transaction.reject('REFERENCE_EXPIRED', at);
+      }
+      await session.saveTransaction(transaction);
+      // Sem a requisição original, os eventos da resolução são correlacionados pelo ID da própria transação.
+      const result = await this.finish(session, transaction, wallet, entry, transaction.id, at);
+      await session.resolvePendingReference(transaction.id, attempts, at);
+      if (result.status === 'PROCESSED') return 'processed';
+      return result.failureCode === 'REFERENCE_EXPIRED' ? 'expired' : 'rejected';
+    });
+  }
+
+  // Trecho comum ao envio e à resolução: vínculo, saldo, ledger, resultado terminal e eventos na mesma unidade.
+  private async finish(session: FinancialSession, transaction: WagerTransaction, wallet: Wallet, entry: LedgerEntry | undefined,
+    correlationId: string, at: string): Promise<TransactionResult> {
     const state = transaction.toState();
+    const command = state.command;
+    if (!command) throw new Error('Submitted transaction without command');
     if (state.referenceTransactionId) await session.linkReference(state.id, state.referenceTransactionId, command.kind);
     if (entry) {
       await session.saveWallet(wallet);
       await session.appendLedger(entry);
       await session.enqueue(WalletBalanceChanged.from(entry.toState(), wallet.version, this.eventContext(correlationId, at)).toJSON());
     }
-    return this.persistTerminal(session, transaction, wallet, correlationId, at);
+    const result = await this.persistTerminal(session, transaction, wallet, correlationId, at);
+    await session.wakeDependents(command.providerId, command.externalTransactionId, at);
+    return result;
+  }
+
+  private nextAttempt(at: string, attempts: number, deadlineAt: string): string {
+    const delay = referenceRetryDelayMs(attempts, this.pendingPolicy) + randomInt(0, this.pendingPolicy.firstRetryDelayMs);
+    return new Date(Math.min(Date.parse(at) + delay, Date.parse(deadlineAt))).toISOString();
   }
 
   // Aplica uma única transição sob o lock da wallet; regras violadas viram rejeição persistida, não exceção.
@@ -119,7 +174,7 @@ export class WageringService {
         ? await session.hasProcessedReversal(reference.id, command.kind) : false;
       const decision = transaction.evaluateReference(reference, alreadyReversed);
       if (decision.outcome === 'pending') {
-        transaction.markPendingReference();
+        if (transaction.status === 'PENDING') transaction.markPendingReference();
         return undefined;
       }
       if (decision.outcome === 'reject') throw new DomainError(decision.code);

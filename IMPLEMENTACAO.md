@@ -48,7 +48,7 @@ A migration `Migration202610090002` acrescenta:
 
 - `wager_references`: vínculo gravado só para operações processadas, com índice único parcial `(reference_transaction_id, kind)` para REFUND e ROLLBACK e trigger que confere tipo, wallet, jogador, moeda, rodada e valor. Sem a checagem do serviço, o segundo REFUND da mesma BET bate nesse índice e a unidade inteira é desfeita.
 - `transaction_acceptances`: aceite pendente imutável, separado do resultado terminal.
-- `pending_references`: agenda com tentativas, próxima tentativa (1s após o aceite) e prazo (24h), que o worker da próxima entrega consumirá.
+- `pending_references`: agenda com tentativas, próxima tentativa (1s após o aceite) e prazo (24h), consumida pelo worker de referências.
 - Constraints de kind, status, LOSS com 0.00, coerência do `command` com wallet/jogador e presença da referência por tipo; o trigger do ledger passa a exigir a direção de cada kind, inclusive a inversa no ROLLBACK.
 
 O downgrade descarta vínculos, aceites e agenda e restaura as constraints anteriores como `NOT VALID`, para não falhar com linhas já gravadas pelos novos kinds.
@@ -64,6 +64,16 @@ A classificação de falhas e o tratamento de cada caso estão no README. Retry 
 ## Eventos e diagnóstico
 
 Processed, Rejected, PendingReference e BalanceChanged são classes concretas, com envelope versionado e MoneyProps serializável. Eventos são persistidos no mesmo commit.
+
+## Worker de referências
+
+`src/reference-worker.ts` é um processo próprio, só com PostgreSQL, que chama `WageringService.resolvePending`. A resolução usa a mesma decisão (`decide`) e o mesmo trecho final do envio original: vínculo, saldo, ledger, resultado terminal e eventos na mesma unidade. Não há segundo motor financeiro.
+
+A migration `Migration202610100003` acrescenta à agenda `claim_token`, `lease_until` e `resolved_at`, o índice parcial das pendências abertas, o índice das transações que esperam por um provedor/ID externo e um trigger: agenda resolvida é imutável, só é resolvida com a transação terminal, prazo não muda e tentativas só crescem. O papel runtime atualiza apenas as colunas do worker.
+
+Claim em autocommit com `SKIP LOCKED`, token e lease, como no publisher. A alternativa de travar a linha da agenda numa transação aberta durante a resolução foi descartada: travaria a agenda antes da wallet, enquanto o envio que antecipa dependentes trava a wallet antes da agenda, e essa inversão abriria deadlocks. Com o claim separado, a unidade financeira trava wallet e depois agenda, revalida o token e o status e só então altera algo.
+
+Ao ficar terminal, toda operação antecipa (`next_attempt_at` igual ao instante atual) as pendências que a referenciam pelo provedor e ID externo. A antecipação acontece sob o lock da wallet: se o worker avaliou antes da referência existir, reagenda e é antecipado depois; se avaliou depois, já encontra a referência. Expiração: na reavaliação, referência ainda não terminal e prazo vencido. Um worker parado além do prazo, ao voltar, processa a pendência cuja referência já chegou e só expira as que continuam sem referência.
 
 ## Publisher da outbox
 
