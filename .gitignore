@@ -1,7 +1,6 @@
 /docs/
 /README-ignored.md
 /AGENTS.md
-/ARCHITECTURE.md
 node_modules/
 dist/
 coverage/

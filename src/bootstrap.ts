@@ -27,8 +27,8 @@ class InfrastructureLifecycle implements OnApplicationShutdown {
 }
 
 /** Composição única do caso de uso financeiro, compartilhada pela API e pelo consumidor da fila. */
-export function createWageringService(orm: MikroORM): WageringService {
-  return new WageringService(new PostgresUnitOfWork(orm), new SystemClock(), new UuidGenerator(),
+export function createWageringService(orm: MikroORM, metrics?: Metrics): WageringService {
+  return new WageringService(new PostgresUnitOfWork(orm, undefined, metrics), new SystemClock(), new UuidGenerator(),
     new Sha256PayloadHasher(), new UnauthenticatedProviderIdentity());
 }
 
@@ -49,7 +49,7 @@ class AppModule {
         { provide: ORM, useValue: orm }, { provide: SQS, useValue: sqs }, { provide: MESSAGING, useValue: messaging },
         InfrastructureLifecycle, Metrics,
         { provide: QUERIES, useFactory: () => new PostgresQueries(orm) },
-        { provide: WageringService, useFactory: () => createWageringService(orm) },
+        { provide: WageringService, useFactory: (metrics: Metrics) => createWageringService(orm, metrics), inject: [Metrics] },
       ],
     };
   }

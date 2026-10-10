@@ -192,7 +192,7 @@ describe('shutdown e crash', () => {
 
   // Windows não entrega SIGTERM a handlers; a CI em Linux executa este caso com o processo real do consumidor.
   test.skipIf(process.platform === 'win32')('SIGTERM no processo real encerra com código 0 depois do stop', async () => {
-    const child = Bun.spawn([process.execPath, '--no-env-file', 'src/consumer.ts'], { env: process.env, stdout: 'pipe', stderr: 'pipe' });
+    const child = Bun.spawn([process.execPath, '--no-env-file', 'src/consumer.ts'], { env: { ...process.env, METRICS_PORT: '0' }, stdout: 'pipe', stderr: 'pipe' });
     const reader = child.stdout.getReader();
     let output = '';
     while (!output.includes('consumer_started')) {

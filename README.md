@@ -2,9 +2,16 @@
 
 Processador financeiro Jungle Gaming: abertura de wallet, BET, WIN, LOSS, REFUND e ROLLBACK, ledger, outbox publicada, replay, referências fora de ordem resolvidas por worker e painel local de testes. Dinheiro é string decimal nos contratos e bigint em centavos no domínio.
 
-**Estado:** dependências instaladas com Bun 1.4.2 e `bun.lock` versionado. Typecheck (API e painel), lint, testes de unidade, builds, integração com PostgreSQL real (provisionamento e migration em banco descartável) e conferência manual do painel executados com sucesso. Build Docker da API ainda sem registro.
+Provedores de jogos enviam apostas e resultados por HTTP ou pela fila SQS; o sistema mantém saldo, ledger e eventos corretos diante de mensagens duplicadas, referências fora de ordem, concorrência entre instâncias e falhas. Decisões, trade-offs e limitações estão no [ARCHITECTURE.md](ARCHITECTURE.md).
 
-A concorrência entre três processos da API está comprovada por testes reais. Comandos também chegam pela fila SQS `wager-transactions.fifo`, consumida com inbox persistente e ack depois do commit pelo mesmo caso de uso da API. Os eventos gravados na outbox no mesmo commit são entregues à fila `wager-events.fifo` por um processo publisher, que pode rodar em várias instâncias. Uma operação que chega antes da referência fica `PENDING_REFERENCE` com aceite, agenda e evento duráveis; um processo worker a reavalia com backoff e a processa quando a referência chega, ou a rejeita com `REFERENCE_EXPIRED` após 24 horas. O painel oferece wallet, todas as operações, consulta de transação, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
+| Processo | Comando | Papel |
+| --- | --- | --- |
+| API | `bun run dev` | HTTP, consultas, reconciliação, health e métricas. |
+| Consumidor | `bun run consumer` | Comandos da fila `wager-transactions.fifo`, com inbox e DLQ. |
+| Publisher | `bun run publisher` | Entrega da outbox à fila `wager-events.fifo`. |
+| Worker de referências | `bun run reference-worker` | Reavaliação e expiração de operações `PENDING_REFERENCE`. |
+
+Todos usam o mesmo caso de uso financeiro e podem rodar em várias instâncias. O painel React (`bun run dev:web`) serve para testes manuais contra a API real. Não há autenticação de provedores nesta versão (ver ARCHITECTURE.md); API, Vite e portas de banco usam loopback no host.
 
 ## Como executar o projeto
 
@@ -12,7 +19,7 @@ A concorrência entre três processos da API está comprovada por testes reais. 
 
 - Bun **1.4.2**, conforme `.bun-version` e `packageManager`; [instalação oficial](https://bun.com/docs/installation).
 - Docker com Docker Compose v2 para PostgreSQL (`postgres:17.6-alpine`) e o emulador SQS [MiniStack](https://ministack.org/) (`ministackorg/ministack:1.5.15`). O MiniStack não exige conta nem token; o LocalStack passou a exigir token a partir da versão 2026.03.0.
-- Git para obter o código. Nenhum Node/npm separado é usado pelos comandos abaixo; a prova de compatibilidade das bibliotecas com Bun ainda deve ser executada.
+- Git para obter o código. Nenhum Node/npm separado é usado pelos comandos abaixo.
 
 As instruções abaixo estão em PowerShell e pressupõem a raiz do repositório. Os comandos alteram somente o ambiente local configurado; são passos manuais. Não há migration em bootstrap, healthcheck, setup de teste ou inicialização de container.
 
@@ -28,12 +35,12 @@ O código desta entrega está integrado em `main`. Novas entregas passam primeir
 ```powershell
 Copy-Item .env.example .env
 Copy-Item .env.test.example .env.test
-bun install
+bun install --frozen-lockfile
 ```
 
 Executar as cópias apenas se os arquivos locais ainda não existirem. Ajustar senhas antes de uso e mantê-las consistentes entre `POSTGRES_PASSWORD`, `DATABASE_RUNTIME_PASSWORD` e as URLs; caracteres especiais em URLs precisam de percent-encoding. Os valores dos exemplos são credenciais fictícias de desenvolvimento. `VITE_*` é público e não pode conter segredo.
 
-A primeira instalação gera o lockfile único `bun.lock`. Revisá-lo e versioná-lo junto do código. Nas instalações seguintes usar `bun install --frozen-lockfile`. Não substituir por lockfile npm/yarn nem editar o lockfile manualmente.
+`bun.lock` é o lockfile único e versionado; `--frozen-lockfile` falha se o manifesto divergir dele. Não substituir por lockfile npm/yarn nem editar o lockfile manualmente.
 
 ### Rodando localmente
 
@@ -76,9 +83,16 @@ bun run publisher
 bun run reference-worker
 ```
 
+Cada um expõe `/metrics` e `/health/live` em loopback: consumidor na porta 9101, publisher na 9102 e worker na 9103 (`METRICS_PORT` e `METRICS_HOST` sobrescrevem). A API expõe `/metrics` na própria porta, com os gauges de backlog lidos do banco:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:3000/metrics
+Invoke-RestMethod http://127.0.0.1:9101/metrics
+```
+
 ### Rodando a API em Docker
 
-Depois de gerar `bun.lock`, subir PostgreSQL e aplicar manualmente as migrations acima:
+Com PostgreSQL e o emulador no ar, o papel provisionado e as migrations e filas aplicadas manualmente (passos acima):
 
 ```powershell
 docker compose -f compose.yml up -d --build api consumer publisher reference-worker
@@ -87,7 +101,7 @@ docker compose -f compose.yml logs -f --tail=100 api consumer publisher referenc
 docker compose -f compose.yml down
 ```
 
-Parar a API, o consumidor, o publisher e o worker executados no host antes de iniciar os containers. Os serviços `consumer`, `publisher` e `reference-worker` usam a mesma imagem com `bun dist/consumer.js`, `bun dist/publisher.js` e `bun dist/reference-worker.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem, o lote ou a resolução em andamento. Publisher e worker aceitam várias instâncias (`--scale publisher=2`, `--scale reference-worker=2`); o worker só usa PostgreSQL. Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. O painel continua pelo Vite no host nesta entrega. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
+Parar a API, o consumidor, o publisher e o worker executados no host antes de iniciar os containers. Os serviços `consumer`, `publisher` e `reference-worker` usam a mesma imagem com `bun dist/consumer.js`, `bun dist/publisher.js` e `bun dist/reference-worker.js` e `stop_grace_period` de 30s para o SIGTERM concluir a mensagem, o lote ou a resolução em andamento. Publisher e worker aceitam várias instâncias (`--scale publisher=2`, `--scale reference-worker=2`); o worker só usa PostgreSQL. Os containers usam `DATABASE_URL_CONTAINER`, com host `postgres`, e `SQS_ENDPOINT_CONTAINER`, com host `sqs`; recebe somente configuração de runtime. O Dockerfile exige lockfile e instalação congelada, executa como usuário `bun` e não aplica migrations. Nos containers, `/metrics` dos processos fica só na rede interna do Compose, sem porta publicada no host. O painel continua pelo Vite no host. `down` preserva o volume de desenvolvimento; o banco de testes tem armazenamento deliberadamente descartável.
 
 ## Validação
 
@@ -167,7 +181,7 @@ A reversão da migration apaga o histórico e não faz parte do procedimento nor
 | GET `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consulta identidade externa. |
 | GET `/wallets/:walletId/ledger?limit=50&cursor=...` | Ordem crescente, cursor opaco e limite de 1 a 100. |
 | POST `/wallets/:walletId/reconciliation` | Compara saldo e ledger em snapshot consistente; não corrige divergência. |
-| GET `/health/live`, `/health/ready`, `/metrics` | Diagnóstico da etapa HTTP/BET. |
+| GET `/health/live`, `/health/ready`, `/metrics` | Liveness, readiness (schema e fila de comandos) e métricas Prometheus com backlog do banco. |
 
 Money: `{ "amount": "25.00", "currency": "BRL" }`, duas casas obrigatórias, sem sinais/expoentes/espaços/zeros à esquerda. UUIDs identificam jogador e recursos internos. Provedor, ID externo, chave, rodada e jogo aceitam de 1 a 128 caracteres de letras ASCII, números, `.`, `_`, `:`, `-`, começando por letra/número; não há trim ou mudança de caixa. Body JSON tem limite de 16 KiB e rejeita campos desconhecidos.
 
@@ -189,6 +203,27 @@ HTTP: 201 criação, 200 processamento/consulta, 202 aceite com referência aind
 | `REFERENCE_AMOUNT_MISMATCH` | Valor da reversão diferente do original. | Enviar o valor integral. |
 | `REFERENCE_ALREADY_REVERSED` | Já existe reversão processada do mesmo tipo para a referência. | Nada a fazer; o efeito já foi aplicado. |
 | `REFERENCE_EXPIRED` | Referência não chegou em 24 horas desde o aceite (aplicado pelo worker de referências). | Reenviar a operação original, se ainda for devida. |
+
+## Cenários obrigatórios do case
+
+Cada cenário da seção 13 do enunciado tem prova automatizada contra PostgreSQL e MiniStack reais; todos conferem no fim que o saldo armazenado é igual ao reconstruído pelo ledger.
+
+| Cenário | Onde é provado |
+| --- | --- |
+| Mesma aposta 50 vezes em paralelo → um débito | `tests/concurrency/concurrency.test.ts` |
+| Disputa de saldo na mesma wallet (80/80 com saldo 100; vinte débitos de 10.00) | `tests/concurrency/concurrency.test.ts` |
+| Wallets distintas em paralelo | `tests/concurrency/concurrency.test.ts` |
+| Três processos/instâncias simultâneos | `tests/concurrency/harness.ts` sobe três processos da API |
+| Worker morto depois do commit e antes do ack | `tests/integration/sqs-consumer.test.ts` (processo real com SIGKILL) |
+| Dois publishers sobre a mesma outbox | `tests/integration/outbox-publisher.test.ts` |
+| REFUND/ROLLBACK antes da referência | `tests/integration/operations.test.ts` (aceite) e `tests/integration/reference-worker.test.ts` (resolução, expiração, dois workers) |
+| Reinício com consistência final | Crash antes do envio/depois do envio no publisher, antes do commit no worker e SIGTERM dos processos reais (CI Linux) |
+| Migrations e constraints | `tests/integration/financial-flow.test.ts`, `operations.test.ts`; up/down/up na CI |
+| Atomicidade wallet, ledger, inbox e outbox | Falha antes do commit em `financial-flow.test.ts` e inbox na mesma transação em `sqs-consumer.test.ts` |
+| Inbox, redelivery, retry e DLQ | `tests/integration/sqs-consumer.test.ts` |
+| Money, Wallet, regras por kind, moeda, idempotência com payload divergente | `tests/unit/` e `tests/integration/financial-flow.test.ts` |
+| Divergência entre saldo e ledger sinalizada, contada e não corrigida | `tests/integration/observability.test.ts` |
+| Métricas da API e dos processos, sem IDs nas séries | `tests/integration/observability.test.ts`, `tests/unit/metrics.test.ts` |
 
 ## Fila de comandos
 
@@ -256,7 +291,7 @@ O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualiza
 
 O workflow `CodeQL` (`.github/workflows/codeql.yml`) analisa JavaScript/TypeScript em PRs e em pushes para `teste` e `main`; a análise das branches fixas é a base para identificar alertas novos.
 
-Exceção da auditoria: `GHSA-vfj7-8cjw-p6xm` (`braces`) não tem versão corrigida publicada e é alcançada apenas por globs estáticos do MikroORM e da CLI de migrations. A cobertura exclui migrations, scripts administrativos e `web/vite.config.ts`, que rodam como processos separados ou configuração, fora da instrumentação do `bun test`.
+Exceção da auditoria: `GHSA-vfj7-8cjw-p6xm` (`braces`) não tem versão corrigida publicada e é alcançada apenas por globs estáticos do MikroORM e da CLI de migrations. A cobertura exclui migrations, scripts administrativos, os pontos de entrada dos quatro processos (`src/main.ts`, `src/consumer.ts`, `src/publisher.ts`, `src/reference-worker.ts`) e `web/vite.config.ts`, que rodam como processos separados ou configuração, fora da instrumentação do `bun test`.
 
 Migrations só são aplicadas no PostgreSQL descartável criado pelo job; nenhum banco persistente é acessado. Não há deploy.
 
@@ -269,4 +304,4 @@ Migrations só são aplicadas no PostgreSQL descartável criado pelo job; nenhum
 - Env de container: `docker compose -f compose.yml up -d --force-recreate api`; `restart` não recarrega env do Compose.
 - Reiniciar o mesmo processo sem mudança de código/env: `docker compose -f compose.yml restart api`.
 
-Não há deploy de produção ou CI/CD configurado. O ponto de extensão `ProviderIdentityPort` é deliberadamente permissivo nesta fase; completar autenticação e operação de produção requer escopo próprio. Decisões e limitações da implementação estão em [IMPLEMENTACAO.md](IMPLEMENTACAO.md).
+Não há deploy de produção ou CI/CD configurado. O ponto de extensão `ProviderIdentityPort` é deliberadamente permissivo nesta fase; completar autenticação e operação de produção requer escopo próprio. Decisões e limitações da implementação estão no [ARCHITECTURE.md](ARCHITECTURE.md).

@@ -37,6 +37,24 @@ export function readMessagingConfig(environment: Record<string, string | undefin
   return parsed.data;
 }
 
+const metricsSchema = z.object({
+  // Loopback por padrão; no Compose a porta fica só na rede interna, sem publicação no host.
+  METRICS_HOST: z.string().min(1).default('127.0.0.1'),
+  METRICS_PORT: z.coerce.number().int().min(0).max(65535).optional(),
+});
+
+export interface MetricsConfig {
+  readonly host: string;
+  readonly port: number;
+}
+
+/** Cada processo tem porta padrão própria para rodarem juntos no host; 0 escolhe uma porta livre. */
+export function readMetricsConfig(defaultPort: number, environment: Record<string, string | undefined> = process.env): MetricsConfig {
+  const parsed = metricsSchema.safeParse(environment);
+  if (!parsed.success) throw new Error(`Invalid environment keys: ${parsed.error.issues.map((issue) => issue.path.join('.')).join(', ')}`);
+  return { host: parsed.data.METRICS_HOST, port: parsed.data.METRICS_PORT ?? defaultPort };
+}
+
 export function adminUrl(): string {
   const result = databaseUrl.safeParse(process.env.DATABASE_ADMIN_URL);
   if (!result.success) throw new Error('DATABASE_ADMIN_URL is required');
