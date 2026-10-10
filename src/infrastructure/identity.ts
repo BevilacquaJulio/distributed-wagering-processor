@@ -8,7 +8,9 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (typeof value === 'object') {
     const object = value as Record<string, unknown>;
-    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(',')}}`;
+    // Campo ausente e campo undefined produzem o mesmo hash: a referência omitida não entra no payload.
+    const keys = Object.keys(object).filter((key) => object[key] !== undefined).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(',')}}`;
   }
   throw new Error('Payload must be JSON serializable');
 }

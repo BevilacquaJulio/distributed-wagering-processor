@@ -1,9 +1,8 @@
 import { IsolationLevel } from '@mikro-orm/core';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import { ApplicationError } from '../../application/errors';
-import type { FinancialQueries, LedgerCursor, LedgerPage, Reconciliation } from '../../application/ports';
+import type { FinancialQueries, LedgerCursor, LedgerPage, Reconciliation, TransactionResult, TransactionView } from '../../application/ports';
 import { Money } from '../../domain/money';
-import type { TransactionState } from '../../domain/wager-transaction';
 import type { WalletState } from '../../domain/wallet';
 import { LedgerSchema, TransactionSchema, WalletSchema } from './entities';
 import { ledgerFromRow, transactionFromRow, walletFromRow } from './mappers';
@@ -17,13 +16,19 @@ export class PostgresQueries implements FinancialQueries {
     return walletFromRow(row).toState();
   }
 
-  async transaction(id: string): Promise<TransactionState> {
-    const row = await this.orm.em.fork().findOne(TransactionSchema, { id });
+  async transaction(id: string): Promise<TransactionView> {
+    const em = this.orm.em.fork();
+    const row = await em.findOne(TransactionSchema, { id });
     if (!row) throw new ApplicationError('TRANSACTION_NOT_FOUND');
-    return transactionFromRow(row).toState();
+    const related = await em.execute<{ reference: string | null; terminal: TransactionResult | null; accepted: TransactionResult | null }[]>(`
+      select (select reference_transaction_id from wager_references where transaction_id = ?) as reference,
+        (select body from transaction_results where transaction_id = ?) as terminal,
+        (select body from transaction_acceptances where transaction_id = ?) as accepted`, [id, id, id]);
+    const details = related[0];
+    return { ...transactionFromRow(row, details?.reference ?? null).toState(), result: details?.terminal ?? details?.accepted ?? null };
   }
 
-  async transactionByExternal(providerId: string, externalTransactionId: string): Promise<TransactionState> {
+  async transactionByExternal(providerId: string, externalTransactionId: string): Promise<TransactionView> {
     const rows = await this.orm.em.fork().execute<{ id: string }[]>(
       'select transaction_id as id from wager_identities where provider_id = ? and external_transaction_id = ?', [providerId, externalTransactionId]);
     if (!rows[0]) throw new ApplicationError('TRANSACTION_NOT_FOUND');

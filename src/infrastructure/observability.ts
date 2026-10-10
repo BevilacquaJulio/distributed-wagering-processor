@@ -16,13 +16,13 @@ export class JsonLogger implements LoggerService {
 export class Metrics {
   private readonly counters = new Map<string, number>();
 
-  increment(name: 'processed' | 'rejected' | 'replay' | 'conflict' | 'reconciliation_divergence' | 'infrastructure_failure'): void {
+  increment(name: 'processed' | 'rejected' | 'pending_reference' | 'replay' | 'conflict' | 'reconciliation_divergence' | 'infrastructure_failure'): void {
     this.counters.set(name, (this.counters.get(name) ?? 0) + 1);
   }
 
   render(): string {
     return '# HELP wagering_results_total Observed results in this process.\n# TYPE wagering_results_total counter\n'
-      + ['processed', 'rejected', 'replay', 'conflict', 'reconciliation_divergence', 'infrastructure_failure']
+      + ['processed', 'rejected', 'pending_reference', 'replay', 'conflict', 'reconciliation_divergence', 'infrastructure_failure']
         .map((name) => `wagering_results_total{result="${name}"} ${this.counters.get(name) ?? 0}\n`).join('');
   }
 }

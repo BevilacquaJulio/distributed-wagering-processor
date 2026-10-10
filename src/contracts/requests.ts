@@ -9,10 +9,18 @@ export const moneySchema = z.object({
 }).strict();
 
 export const openWalletSchema = z.object({ playerId: uuid, initialBalance: moneySchema }).strict();
-export const betSchema = z.object({
+const wagerFields = {
   providerId: identifier, externalTransactionId: identifier, playerId: uuid, walletId: uuid,
-  roundId: identifier, gameId: identifier, kind: z.literal('BET'), money: moneySchema,
-}).strict();
+  roundId: identifier, gameId: identifier, money: moneySchema,
+};
+// BET e LOSS não aceitam referência; WIN aceita opcionalmente; REFUND e ROLLBACK exigem. OPENING não é aceito.
+export const wagerSchema = z.discriminatedUnion('kind', [
+  z.object({ ...wagerFields, kind: z.literal('BET') }).strict(),
+  z.object({ ...wagerFields, kind: z.literal('LOSS') }).strict(),
+  z.object({ ...wagerFields, kind: z.literal('WIN'), referenceExternalTransactionId: identifier.optional() }).strict(),
+  z.object({ ...wagerFields, kind: z.literal('REFUND'), referenceExternalTransactionId: identifier }).strict(),
+  z.object({ ...wagerFields, kind: z.literal('ROLLBACK'), referenceExternalTransactionId: identifier }).strict(),
+]);
 
 export const ledgerQuerySchema = z.object({
   cursor: z.string().min(1).max(512).optional(),

@@ -3,7 +3,7 @@ import { Wallet } from '../../src/domain/wallet';
 import { Money } from '../../src/domain/money';
 import { WagerTransaction } from '../../src/domain/wager-transaction';
 import { Sha256PayloadHasher } from '../../src/infrastructure/identity';
-import { betSchema, ledgerQuerySchema } from '../../src/contracts/requests';
+import { ledgerQuerySchema, wagerSchema } from '../../src/contracts/requests';
 
 const at = '2026-10-09T12:00:00.000Z';
 const money = (amount: string) => Money.from({ amount, currency: 'BRL' });
@@ -44,7 +44,7 @@ test('hash é independente da ordem de chaves e diferencia campos de negócio', 
 });
 
 test('contrato rejeita OPENING e limita paginação', () => {
-  expect(betSchema.safeParse({ kind: 'OPENING' }).success).toBe(false);
+  expect(wagerSchema.safeParse({ kind: 'OPENING' }).success).toBe(false);
   expect(ledgerQuerySchema.parse({}).limit).toBe(50);
   expect(ledgerQuerySchema.safeParse({ limit: '101' }).success).toBe(false);
   expect(ledgerQuerySchema.safeParse({ limit: '0' }).success).toBe(false);

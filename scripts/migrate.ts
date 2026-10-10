@@ -1,6 +1,6 @@
 import { MikroORM } from '@mikro-orm/postgresql';
 import { adminUrl } from '../src/config';
-import { databaseConfig } from '../src/infrastructure/postgres/config';
+import { databaseConfig, MIGRATIONS } from '../src/infrastructure/postgres/config';
 
 let orm: MikroORM | undefined;
 try {
@@ -16,7 +16,7 @@ try {
     const tables = await em.execute<{ present: boolean }[]>("select to_regclass('public.mikro_orm_migrations') is not null as present");
     const executed = tables[0]?.present
       ? await em.execute<{ name: string; executed_at: Date }[]>('select name, executed_at from mikro_orm_migrations order by id') : [];
-    const pending = ['Migration202610090001'].filter((name) => !executed.some((row) => row.name === name));
+    const pending = MIGRATIONS.map((migration) => migration.name).filter((name) => !executed.some((row) => row.name === name));
     process.stdout.write(`${JSON.stringify({ executed, pending }, null, 2)}\n`);
   } else if (action === 'up') {
     await orm.getMigrator().up();
