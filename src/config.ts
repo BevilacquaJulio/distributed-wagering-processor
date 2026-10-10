@@ -25,6 +25,8 @@ const messagingSchema = z.object({
   SQS_COMMAND_QUEUE: queueName.default('wager-transactions.fifo'),
   SQS_DEAD_LETTER_QUEUE: queueName.default('wager-transactions-dlq.fifo'),
   SQS_CONSUMER_NAME: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).default('wager-transactions-consumer'),
+  // Eventos de resultado ficam fora da fila de comandos para que nunca sejam consumidos como comandos.
+  SQS_EVENT_QUEUE: queueName.default('wager-events.fifo'),
 });
 
 export type MessagingConfig = z.infer<typeof messagingSchema>;

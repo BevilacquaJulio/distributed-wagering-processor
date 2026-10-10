@@ -107,6 +107,7 @@ jobs:
           SQS_REGION=us-east-1
           SQS_COMMAND_QUEUE=wager-transactions-test.fifo
           SQS_DEAD_LETTER_QUEUE=wager-transactions-test-dlq.fifo
+          SQS_EVENT_QUEUE=wager-events-test.fifo
           AWS_ACCESS_KEY_ID=ci-emulator
           AWS_SECRET_ACCESS_KEY=ci-emulator
           EOF
