@@ -5,6 +5,8 @@ const runtimeSchema = z.object({
   DATABASE_URL: databaseUrl,
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().default('127.0.0.1'),
+  // Swagger em /docs; desligável onde a documentação não deve ser pública.
+  API_DOCS_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
 });
 
 export type RuntimeConfig = z.infer<typeof runtimeSchema>;
