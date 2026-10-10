@@ -22,6 +22,10 @@ Depois da reserva, a wallet é bloqueada e relida. Wallets distintas não compar
 
 Antes do commit, falha desfaz toda a unidade. Depois do commit, replay lê o snapshot original e não recalcula saldo nem reemite eventos. `beforeCommit` é uma dependência de teste injetável no adaptador, sem rota/env pública de crash.
 
+### Prova entre processos
+
+`tests/concurrency` sobe três processos da API contra o mesmo PostgreSQL e sincroniza a disputa por uma barreira observada no banco: uma transação de teste segura a wallet (ou uma wallet provisória do mesmo jogador) e só é liberada quando todas as transações das instâncias aparecem esperando lock em `pg_stat_activity`. Os cenários cobrem 50 envios da mesma BET, 80/80 contra 100, vinte débitos de 10.00 contra 100, isolamento entre wallets e criação simultânea da mesma wallet. Sem o `PESSIMISTIC_WRITE` na leitura da wallet, os cenários 80/80 e vinte débitos falham com lost update, o que confirma que a suíte detecta a ausência do lock.
+
 ## Proteções no schema
 
 Unicidade de wallet, identidades e ledger; numeric finito dentro dos bounds; equação local do lançamento; foreign keys entre ledger, operação e wallet/moeda; ledger compatível com operação processada; snapshot compatível com status/failureCode.

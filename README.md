@@ -4,7 +4,7 @@ Primeira implementação do processador financeiro Jungle Gaming: abertura de wa
 
 **Estado:** dependências instaladas com Bun 1.4.2 e `bun.lock` versionado. Typecheck (API e painel), lint, testes de unidade, builds, integração com PostgreSQL real (provisionamento e migration em banco descartável) e conferência manual do painel executados com sucesso. Build Docker da API ainda sem registro.
 
-WIN, LOSS, REFUND, ROLLBACK, SQS/inbox, publicação da outbox, referências pendentes, prova em três processos e CI pertencem às próximas entregas. O painel oferece wallet, BET, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
+A concorrência entre três processos da API está comprovada por testes reais. WIN, LOSS, REFUND, ROLLBACK, SQS/inbox, publicação da outbox e referências pendentes pertencem às próximas entregas. O painel oferece wallet, BET, ledger, replay e reconciliação. Não há autenticação externa nesta etapa; API/Vite/portas de banco usam loopback no host.
 
 ## Como executar o projeto
 
@@ -104,6 +104,7 @@ bun --env-file=.env.test run db:provision
 bun --env-file=.env.test run db:status
 bun --env-file=.env.test run db:migrate
 bun run test:integration
+bun run test:concurrency
 docker compose -f compose.yml --profile test logs --tail=100 postgres-test
 ```
 
@@ -111,7 +112,23 @@ Esperar `postgres-test` healthy. Os testes recusam banco com outro nome/host e n
 
 O PostgreSQL de testes usa tmpfs: parar/recriar o container pode perder os dados desse serviço, exigindo novo provisionamento e migrations. O volume de desenvolvimento é separado. Não usar `down -v` como atualização normal.
 
-A prova de três processos/50 replays e os cenários SQS/crash pós-ack serão adicionados na sequência; não existe script de concorrência ou carga nesta entrega. A reversão da migration apaga o histórico e não faz parte do procedimento normal; `db:down` recusa alvos diferentes de `jungle_test` e exige `ALLOW_DISPOSABLE_DOWN=yes`. Aplicação/reversão em ambiente descartável ainda não foi testada.
+### Concorrência entre três processos
+
+`bun run test:concurrency` usa o mesmo banco descartável e os mesmos pré-requisitos da integração. O teste sobe três processos independentes da API (`bun --no-env-file src/main.ts`), cada um com seu pool, e dispara as requisições distribuídas entre eles.
+
+A disputa é sincronizada por uma barreira no próprio PostgreSQL, sem `sleep`: o teste abre uma transação que segura o recurso disputado (`SELECT ... FOR UPDATE` na wallet ou uma wallet provisória do mesmo jogador), envia as requisições e só libera quando `pg_stat_activity` mostra todas as transações esperando lock. A espera máxima da barreira (2s) fica abaixo do `lock_timeout` da aplicação (3s).
+
+| Cenário | Resultado exigido |
+| --- | --- |
+| Mesma BET 50 vezes | Uma transação e um débito; 1 resposta original e 49 replays com o mesmo resultado. |
+| Duas BETs de 80.00 contra 100.00 | Uma `PROCESSED`, uma `REJECTED` com `INSUFFICIENT_FUNDS`; saldo final 20.00. |
+| Vinte BETs de 10.00 contra 100.00 | Dez processadas, cada uma com um saldo observado distinto (90.00 a 0.00), e dez rejeitadas. |
+| Wallet bloqueada e outra wallet | A segunda wallet é processada enquanto a primeira continua bloqueada. |
+| Trinta criações da mesma wallet | Uma 201 e 29 409 `WALLET_ALREADY_EXISTS`; uma única wallet no banco. |
+
+Cada cenário confere saldo, version, reconciliação com o ledger e a contagem de lançamentos por direção, transações por status e eventos da outbox por tipo.
+
+A reversão da migration apaga o histórico e não faz parte do procedimento normal; `db:down` recusa alvos diferentes de `jungle_test` e exige `ALLOW_DISPOSABLE_DOWN=yes`. A CI aplica, reverte e reaplica a migration no banco descartável dela.
 
 ### Conferência manual do painel
 
@@ -149,7 +166,7 @@ O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualiza
 | **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit` com cobertura LCOV, `build`, `build:web`. |
 | **Auditoria de dependências** | `bun audit --audit-level=high`; falha com vulnerabilidade alta ou crítica. |
 | **Imagem Docker e Compose** | Valida o `compose.yml` e constrói a imagem da API. |
-| **Integração com PostgreSQL real** | Sobe o `postgres-test` do Compose com credenciais geradas na execução, provisiona, aplica a migration, roda `test:integration` com cobertura LCOV, reverte e reaplica a migration. Publica o log como artefato. |
+| **Integração com PostgreSQL real** | Sobe o `postgres-test` do Compose com credenciais geradas na execução, provisiona, aplica a migration, roda `test:integration` com cobertura LCOV e `test:concurrency`, reverte e reaplica a migration. Publica o log como artefato. |
 | **SonarCloud Quality Gate** | Envia a cobertura de unidade e integração ao SonarCloud e aguarda o Quality Gate (inclui 80% de cobertura no código novo). |
 
 O workflow `CodeQL` (`.github/workflows/codeql.yml`) analisa JavaScript/TypeScript em PRs e em pushes para `teste` e `main`; a análise das branches fixas é a base para identificar alertas novos.

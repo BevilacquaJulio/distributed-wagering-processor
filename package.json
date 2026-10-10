@@ -17,6 +17,7 @@
     "lint": "bun node_modules/@biomejs/biome/bin/biome check src tests scripts web/src",
     "test:unit": "bun test tests/unit",
     "test:integration": "bun --env-file=.env.test test tests/integration --timeout 30000",
+    "test:concurrency": "bun --env-file=.env.test test tests/concurrency --timeout 60000",
     "db:provision": "bun scripts/provision.ts",
     "db:status": "bun scripts/migrate.ts status",
     "db:migrate": "bun scripts/migrate.ts up",
