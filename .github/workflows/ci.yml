@@ -28,9 +28,31 @@ jobs:
       - run: bun run typecheck
       - run: bun run typecheck:web
       - run: bun run lint
-      - run: bun run test:unit
+      - run: bun run test:unit --coverage --coverage-reporter=text --coverage-reporter=lcov --coverage-dir=coverage/unit
       - run: bun run build
       - run: bun run build:web
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cobertura-unidade
+          path: coverage/unit/lcov.info
+          if-no-files-found: error
+          retention-days: 7
+
+  auditoria:
+    name: Auditoria de dependências
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      # GHSA-vfj7-8cjw-p6xm (braces): sem versão corrigida publicada; alcançado apenas por globs
+      # estáticos do MikroORM e da CLI de migrations. Remover a exceção quando houver correção.
+      - run: bun audit --audit-level=high --ignore GHSA-vfj7-8cjw-p6xm
 
   docker:
     name: Imagem Docker e Compose
@@ -86,7 +108,14 @@ jobs:
       - run: bun --env-file=.env.test run db:status
 
       - name: Testes de integração
-        run: bun run test:integration 2>&1 | tee integracao.log
+        run: bun run test:integration --coverage --coverage-reporter=text --coverage-reporter=lcov --coverage-dir=coverage/integration 2>&1 | tee integracao.log
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cobertura-integracao
+          path: coverage/integration/lcov.info
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Reversão e reaplicação da migration
         env:
@@ -112,3 +141,30 @@ jobs:
       - name: Encerrar PostgreSQL
         if: always()
         run: docker compose -f compose.yml --profile test down
+
+  sonarcloud:
+    name: SonarCloud Quality Gate
+    needs: [qualidade, integracao]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cobertura-unidade
+          path: coverage/unit
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cobertura-integracao
+          path: coverage/integration
+      - uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300

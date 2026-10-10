@@ -146,9 +146,15 @@ O workflow `CI` (`.github/workflows/ci.yml`) roda na abertura e em cada atualiza
 
 | Job | O que executa |
 | --- | --- |
-| **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit`, `build`, `build:web`. |
+| **Lint, tipos, unidade e build** | Instalação congelada, `typecheck`, `typecheck:web`, `lint`, `test:unit` com cobertura LCOV, `build`, `build:web`. |
+| **Auditoria de dependências** | `bun audit --audit-level=high`; falha com vulnerabilidade alta ou crítica. |
 | **Imagem Docker e Compose** | Valida o `compose.yml` e constrói a imagem da API. |
-| **Integração com PostgreSQL real** | Sobe o `postgres-test` do Compose com credenciais geradas na execução, provisiona, aplica a migration, roda `test:integration`, reverte e reaplica a migration. Publica o log como artefato. |
+| **Integração com PostgreSQL real** | Sobe o `postgres-test` do Compose com credenciais geradas na execução, provisiona, aplica a migration, roda `test:integration` com cobertura LCOV, reverte e reaplica a migration. Publica o log como artefato. |
+| **SonarCloud Quality Gate** | Envia a cobertura de unidade e integração ao SonarCloud e aguarda o Quality Gate (inclui 80% de cobertura no código novo). |
+
+O workflow `CodeQL` (`.github/workflows/codeql.yml`) analisa JavaScript/TypeScript em PRs e em pushes para `teste` e `main`; a análise das branches fixas é a base para identificar alertas novos.
+
+Exceção da auditoria: `GHSA-vfj7-8cjw-p6xm` (`braces`) não tem versão corrigida publicada e é alcançada apenas por globs estáticos do MikroORM e da CLI de migrations. A cobertura exclui migrations, scripts administrativos e `web/vite.config.ts`, que rodam como processos separados ou configuração, fora da instrumentação do `bun test`.
 
 Migrations só são aplicadas no PostgreSQL descartável criado pelo job; nenhum banco persistente é acessado. Não há deploy.
 
