@@ -241,6 +241,7 @@ Abra o painel (8080 em Docker ou 5173 no host). A tela é dividida em passos e a
 1. **Wallet:** crie uma wallet (gere um jogador e defina o saldo inicial) ou reabra uma das wallets recentes deste navegador. O saldo, a versão, o ID da wallet e o ID do jogador ficam numa barra fixa no topo, com botão de copiar.
 2. **Operar:** escolha o tipo (BET, WIN, LOSS, REFUND ou ROLLBACK) e envie. O resultado aparece ao lado, com o **ID externo** pronto para copiar, e a lista "Enviadas nesta sessão" guarda cada envio.
 3. **Consultar** e **Extrato:** abas para ler o estado gravado de uma transação, o ledger e a conferência entre saldo e ledger.
+4. **Últimas requisições:** cada ação do painel (criar wallet, enviar, reenviar, consultar, conferir saldo) aparece com o método, a URL, os headers, o body, scripts opcionais de Pre-request e Post-response, a resposta recebida e um cURL para importar no Postman. A aba pisca até ser aberta sempre que uma nova requisição é registrada.
 
 Cada campo e cada seção tem um botão **i**. Ele abre uma explicação com o que é o campo, o valor padrão, se pode ser alterado, as regras que o servidor aplica e os erros mais comuns. Comece pelo "Como funciona", no topo.
 

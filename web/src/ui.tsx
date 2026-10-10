@@ -80,7 +80,14 @@ export function CopyButton({ value, label }: Readonly<{ value: string; label: st
   </button>;
 }
 
-export interface TabItem<T extends string> { id: T; label: string }
+export interface TabItem<T extends string> {
+  id: T;
+  label: string;
+  /** Pisca suavemente até a aba ser aberta. */
+  attention?: boolean | undefined;
+  /** Balão que sai da aba; a chave nova reinicia a animação. */
+  bubble?: { key: number; text: string } | undefined;
+}
 
 export function Tabs<T extends string>({ items, active, onChange, label }: Readonly<{
   items: readonly TabItem<T>[]; active: T; onChange(id: T): void; label: string;
@@ -98,7 +105,13 @@ export function Tabs<T extends string>({ items, active, onChange, label }: Reado
   }
   return <div role="tablist" aria-label={label} className="tabs">
     {items.map((item) => <button key={item.id} type="button" role="tab" id={`tab-${item.id}`} aria-controls={`panel-${item.id}`}
-      aria-selected={item.id === active} tabIndex={item.id === active ? 0 : -1} onClick={() => onChange(item.id)} onKeyDown={move}>{item.label}</button>)}
+      aria-selected={item.id === active} tabIndex={item.id === active ? 0 : -1} onClick={() => onChange(item.id)} onKeyDown={move}
+      className={item.attention ? 'tab-attention' : undefined}>
+      {item.label}
+      {item.bubble && <span key={item.bubble.key} className="tab-bubble" aria-hidden="true">
+        <span className="tab-bubble-dot" /><span className="tab-bubble-text">{item.bubble.text}</span>
+      </span>}
+    </button>)}
   </div>;
 }
 

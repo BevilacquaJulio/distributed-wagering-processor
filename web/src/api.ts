@@ -1,9 +1,22 @@
-import axios from 'axios';
+import axios, { type AxiosResponse } from 'axios';
 import { z } from 'zod';
+import { recordRequest } from './request-log';
 
 const baseURL = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
 if (baseURL !== '/api') throw new Error('Este painel usa o proxy de mesma origem /api.');
 export const api = axios.create({ baseURL, timeout: 15000 });
+
+/** Ações do usuário ficam registradas em "Últimas requisições", inclusive as que voltam com erro. */
+async function recorded(label: string, send: () => Promise<AxiosResponse>): Promise<AxiosResponse> {
+  try {
+    const response = await send();
+    recordRequest(label, api.getUri(response.config), response.config, response);
+    return response;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.config) recordRequest(label, api.getUri(error.config), error.config, error.response);
+    throw error;
+  }
+}
 const money = z.object({ amount: z.string().regex(/^-?(0|[1-9]\d*)\.\d{2}$/), currency: z.string().regex(/^[A-Z]{3}$/) });
 export const walletSchema = z.object({ id: z.string().uuid(), playerId: z.string().uuid(), balance: money, version: z.number().int() });
 export type Wallet = z.infer<typeof walletSchema>;
@@ -58,23 +71,25 @@ export async function getWallet(id: string, signal?: AbortSignal): Promise<Walle
   return walletSchema.parse((await api.get(`/wallets/${encodeURIComponent(id)}`, { ...(signal ? { signal } : {}) })).data);
 }
 export async function openWallet(fields: z.infer<typeof walletInputSchema>): Promise<Wallet> {
-  return walletSchema.parse((await api.post('/wallets', { playerId: fields.playerId, initialBalance: { amount: fields.amount, currency: 'BRL' } })).data);
+  const response = await recorded(`Criar wallet · ${fields.amount}`,
+    () => api.post('/wallets', { playerId: fields.playerId, initialBalance: { amount: fields.amount, currency: 'BRL' } }));
+  return walletSchema.parse(response.data);
 }
-export async function submitWager({ wallet, fields }: Submission): Promise<WagerResult> {
+export async function submitWager({ wallet, fields }: Submission, label = `${fields.kind} ${fields.amount}`): Promise<WagerResult> {
   const { amount, idempotencyKey, reference, ...identity } = fields;
   const withReference = reference && referencePolicy[fields.kind] !== 'forbidden';
-  const response = await api.post('/wagering/transactions', {
+  const response = await recorded(label, () => api.post('/wagering/transactions', {
     ...identity, playerId: wallet.playerId, walletId: wallet.id, money: { amount, currency: wallet.balance.currency },
     ...(withReference ? { referenceExternalTransactionId: reference } : {}),
-  }, { headers: { 'Idempotency-Key': idempotencyKey }, validateStatus: (status) => status === 200 || status === 202 || status === 422 });
+  }, { headers: { 'Idempotency-Key': idempotencyKey }, validateStatus: (status) => status === 200 || status === 202 || status === 422 }));
   return resultSchema.parse(response.data);
 }
 export async function getTransaction(id: string): Promise<TransactionView> {
-  return transactionSchema.parse((await api.get(`/wagering/transactions/${encodeURIComponent(id)}`)).data);
+  return transactionSchema.parse((await recorded('Consultar por ID interno', () => api.get(`/wagering/transactions/${encodeURIComponent(id)}`))).data);
 }
 export async function getTransactionByExternal(providerId: string, externalTransactionId: string): Promise<TransactionView> {
-  return transactionSchema.parse((await api.get(
-    `/providers/${encodeURIComponent(providerId)}/wagering/transactions/${encodeURIComponent(externalTransactionId)}`)).data);
+  return transactionSchema.parse((await recorded(`Consultar ${externalTransactionId}`, () => api.get(
+    `/providers/${encodeURIComponent(providerId)}/wagering/transactions/${encodeURIComponent(externalTransactionId)}`))).data);
 }
 export async function getLedger(id: string, cursor: string | null, signal?: AbortSignal) {
   return ledgerPageSchema.parse((await api.get(`/wallets/${encodeURIComponent(id)}/ledger`, {
@@ -82,7 +97,7 @@ export async function getLedger(id: string, cursor: string | null, signal?: Abor
   })).data);
 }
 export async function reconcile(id: string) {
-  return reconciliationSchema.parse((await api.post(`/wallets/${encodeURIComponent(id)}/reconciliation`)).data);
+  return reconciliationSchema.parse((await recorded('Conferir saldo', () => api.post(`/wallets/${encodeURIComponent(id)}/reconciliation`))).data);
 }
 
 const messages: Record<string, string> = {

@@ -22,12 +22,16 @@
   input[aria-invalid="true"] { @apply border-[#a13732]; }
   button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { @apply outline-2 outline-offset-2 outline-[#387d65]; }
   small { @apply block text-xs text-muted mt-0.5; }
+  table { @apply w-full text-sm text-left border-collapse; }
+  th { @apply text-[10px] uppercase tracking-wider text-muted font-semibold py-2.5 pr-5 border-b border-line whitespace-nowrap; }
+  td { @apply py-3 pr-5 border-b border-[#e9efeb] align-top; }
   code { @apply font-mono text-[12px] bg-[#eef3f0] rounded px-1 py-0.5; }
 }
 
 @layer components {
   .money { @apply font-mono tabular-nums whitespace-nowrap; }
   .mono { @apply font-mono text-xs; }
+  .method-tag { @apply font-mono text-[11px] font-bold bg-[#e7ecf3] text-[#2f4566] rounded px-1.5 py-0.5 shrink-0; }
   .copy-button { @apply inline-flex items-center gap-1 px-2 py-1 text-xs font-medium shrink-0; }
   .copy-button svg { @apply w-3.5 h-3.5; }
   .shell { @apply max-w-[1280px] mx-auto px-4 sm:px-8; }
@@ -98,8 +102,19 @@
   .wallet-actions button { @apply bg-transparent text-white border-[#5f8673] hover:bg-[#245e48]; }
   .fact-id { @apply flex items-center gap-2 min-w-0; }
 
-  .tabs { @apply flex gap-1 bg-white border border-line rounded-xl p-1 w-fit max-w-full overflow-x-auto; }
-  .tabs [role="tab"] { @apply border-0 bg-transparent px-5 py-2 text-muted rounded-lg; }
+  .tabs { @apply flex flex-wrap gap-1 bg-white border border-line rounded-xl p-1 w-fit max-w-full; }
+  .tabs [role="tab"] { @apply relative border-0 bg-transparent px-5 py-2 text-muted rounded-lg; }
+  .tabs .tab-attention { @apply text-forest; animation: tab-glow 1.8s ease-in-out infinite; }
+  /* Balão à direita da aba, em âmbar para não se confundir com o verde do cartão de saldo. A posição usa a propriedade
+     translate e a animação usa transform, então as duas se compõem sem uma sobrescrever a outra. */
+  .tab-bubble { @apply absolute left-[calc(100%+14px)] top-1/2 z-20 flex items-center gap-2 whitespace-nowrap rounded-2xl px-3.5 py-2
+    font-mono text-xs font-semibold pointer-events-none;
+    translate: 0 -50%; transform-origin: 0 50%; background: #ffc94d; color: #3d2a00;
+    box-shadow: 0 10px 24px -8px rgb(122 82 0 / .55), 0 0 0 1px rgb(122 82 0 / .15);
+    animation: bubble-life 4.8s cubic-bezier(.3, 1.4, .5, 1) forwards; }
+  .tab-bubble::before { content: ""; @apply absolute right-full top-1/2 -translate-y-1/2 border-y-[7px] border-r-[9px] border-y-transparent; border-right-color: #ffc94d; }
+  .tab-bubble-dot { @apply w-2 h-2 rounded-full bg-[#3d2a00]; animation: bubble-dot .8s ease-in-out 5; }
+  .tab-bubble-text { animation: bubble-text 4.8s ease forwards; }
   .tabs [role="tab"][aria-selected="true"] { @apply bg-forest text-white; }
   .operate-grid { @apply grid gap-5 items-start lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]; }
   .side-stack { @apply space-y-5 min-w-0; }
@@ -123,6 +138,20 @@
   .badge-wait { @apply bg-[#f6ecd0] text-[#7a5a12]; }
   .badge-neutral { @apply bg-[#e7ecf3] text-[#3a4f6d]; }
 
+  .requests-grid { @apply grid gap-5 items-start lg:grid-cols-[280px_minmax(0,1fr)]; }
+  .request-list { @apply space-y-1.5 lg:max-h-[640px] lg:overflow-y-auto lg:pr-1; }
+  .request-item { @apply w-full flex items-center gap-2 text-left font-normal py-2; }
+  .request-item[aria-current="true"] { @apply border-forest bg-forest-soft; }
+  .steps { @apply space-y-5; }
+  .step { @apply flex gap-3 text-sm; }
+  .step h3 { @apply flex flex-wrap items-baseline gap-x-2; }
+  .step-number { @apply grid place-items-center w-6 h-6 rounded-full bg-forest text-white text-xs font-bold shrink-0; }
+  .step-where { @apply text-xs font-normal text-muted; }
+  .code-block { @apply rounded-lg border border-line overflow-hidden; }
+  .code-head { @apply flex items-center justify-between gap-2 bg-[#f3f6f4] px-3 py-1 text-xs font-semibold text-muted; }
+  .code-block pre { @apply m-0 max-h-72 overflow-auto bg-[#fbfcfb] p-3 font-mono text-[12px] leading-relaxed whitespace-pre; }
+  .kv-table td, .kv-table th { @apply py-1.5; }
+
   .history-list { @apply space-y-2 max-h-[420px] overflow-y-auto pr-1; }
   .history-item { @apply border border-line rounded-lg px-3 py-2.5 space-y-1.5; }
   .history-main { @apply flex flex-wrap items-center gap-2 text-sm; }
@@ -130,12 +159,49 @@
   .history-id .mono { @apply flex-1 min-w-0; }
 
   .table-scroll { @apply overflow-x-auto; }
-  table { @apply w-full text-sm text-left border-collapse; }
-  th { @apply text-[10px] uppercase tracking-wider text-muted font-semibold py-2.5 pr-5 border-b border-line whitespace-nowrap; }
-  td { @apply py-3 pr-5 border-b border-[#e9efeb] align-top; }
   .direction { @apply text-xs font-semibold; }
   .direction.credit { @apply text-[#28674a]; }
   .direction.debit { @apply text-[#8b5836]; }
+}
+
+@keyframes tab-glow {
+  0%, 100% { background-color: transparent; box-shadow: 0 0 0 0 rgb(56 125 101 / 0); }
+  50% { background-color: var(--color-forest-soft); box-shadow: 0 0 0 4px rgb(56 125 101 / .22); }
+}
+
+/* Nasce como um ponto na borda da aba, estica com efeito elástico, flutua por cerca de 4s e é sugado de volta. */
+@keyframes bubble-life {
+  0% { opacity: 0; transform: translateX(-18px) scale(.08, .3); border-radius: 999px; }
+  5% { opacity: 1; transform: translateX(4px) scale(1.18, .72); }
+  9% { transform: translateX(-2px) scale(.94, 1.08); }
+  12% { transform: translateX(0) scale(1); border-radius: 16px; }
+  35% { transform: translateX(4px) rotate(-1.2deg); }
+  60% { transform: translateX(0) rotate(1deg); }
+  85% { opacity: 1; transform: translateX(3px) rotate(0) scale(1); border-radius: 16px; }
+  91% { transform: translateX(6px) scale(1.06, .86); }
+  100% { opacity: 0; transform: translateX(-22px) scale(.05, .4); border-radius: 999px; }
+}
+
+@keyframes bubble-text {
+  0%, 8% { opacity: 0; letter-spacing: .3em; }
+  14%, 84% { opacity: 1; letter-spacing: normal; }
+  90%, 100% { opacity: 0; }
+}
+
+@keyframes bubble-dot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.7); opacity: .5; }
+}
+
+/* Em telas estreitas as abas quebram linha; o balão sai para baixo da aba. */
+@media (max-width: 639px) {
+  .tab-bubble { left: 50%; top: calc(100% + 14px); translate: -50% 0; transform-origin: 50% 0; }
+  .tab-bubble::before { right: auto; left: 50%; top: auto; bottom: 100%; translate: -50% 0; border-width: 0 7px 9px; border-color: transparent transparent #ffc94d; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tabs .tab-attention { animation: none; @apply bg-forest-soft; }
+  .tab-bubble { display: none; }
 }
 
 /* biome-ignore lint/complexity/noImportantStyles: a preferência de movimento reduzido precisa prevalecer sobre qualquer transição */
