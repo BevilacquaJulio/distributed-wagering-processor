@@ -13,6 +13,11 @@ const kindLabels: Record<Kind, string> = {
   REFUND: 'REFUND · estorno de uma BET', ROLLBACK: 'ROLLBACK · desfaz BET, WIN ou REFUND',
 };
 const httpStatus: Record<WagerResult['status'], number> = { PROCESSED: 200, PENDING_REFERENCE: 202, REJECTED: 422, PENDING: 202 };
+function resultTone(result: WagerResult | undefined): string {
+  if (!result || result.status === 'REJECTED') return 'rejected';
+  return result.status === 'PROCESSED' ? '' : 'waiting';
+}
+
 const statusExplanation: Record<WagerResult['status'], string> = {
   PROCESSED: 'Gravada e aplicada ao saldo e ao extrato.',
   PENDING_REFERENCE: 'A operação referenciada ainda não foi encontrada. O saldo não mudou; o worker processa assim que ela chegar, ou rejeita após 24h.',
@@ -34,7 +39,7 @@ function ResultPanel({ sent, onLookup }: Readonly<{ sent: SentOperation | undefi
   return <section className="panel" aria-live="polite">
     <Heading eyebrow="Último envio" title="Resultado" topic="result" />
     {!sent && <p className="muted">Envie uma operação para ver aqui o status, o ID externo e o saldo observado.</p>}
-    {sent && <div className={`result ${result?.status === 'PROCESSED' ? '' : result?.status === 'REJECTED' || !result ? 'rejected' : 'waiting'}`}>
+    {sent && <div className={`result ${resultTone(result)}`}>
       <div className="result-head">
         <span className="kind-tag">{sent.fields.kind}</span><StatusBadge operation={sent} />
         {result && <span className="muted text-xs">HTTP {httpStatus[result.status]}</span>}
@@ -93,7 +98,9 @@ export function OperationForm({ wallet, history, onSent, onLookup, side }: Reado
 
   function changeKind(next: Kind) {
     const current = form.getValues();
-    const amount = next === 'LOSS' ? '0.00' : kind === 'LOSS' ? '25.00' : current.amount;
+    let amount = current.amount;
+    if (next === 'LOSS') amount = '0.00';
+    else if (kind === 'LOSS') amount = '25.00';
     form.reset({ ...current, kind: next, amount, reference: referencePolicy[next] === 'forbidden' ? '' : current.reference, ...newIdentity(next) });
   }
 

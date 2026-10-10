@@ -14,7 +14,8 @@ const tabs = [{ id: 'operate', label: 'Operar' }, { id: 'consult', label: 'Consu
 
 function HealthStatus() {
   const health = useQuery({ queryKey: ['health'], queryFn: async () => z.object({ status: z.literal('up') }).parse((await api.get('/health/ready')).data), retry: false });
-  const label = health.isFetching ? 'Consultando…' : health.isError ? 'API indisponível' : 'API disponível';
+  let label = health.isError ? 'API indisponível' : 'API disponível';
+  if (health.isFetching) label = 'Consultando…';
   return <span className="inline-flex items-center gap-1">
     <button type="button" className={`health ${health.isError ? 'offline' : ''}`} disabled={health.isFetching} onClick={() => void health.refetch()}
       aria-label={`${label}. Consultar de novo`}><span className="dot" aria-hidden="true" />{label}</button>

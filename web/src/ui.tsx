@@ -15,10 +15,8 @@ function InfoDialog({ topic, onClose }: Readonly<{ topic: HelpTopic; onClose(): 
     const dialog = ref.current;
     if (dialog && !dialog.open) dialog.showModal();
   }, []);
-  // O portal tira o modal de formulários e fieldsets desabilitados, que bloqueariam o botão de fechar.
-  // biome-ignore lint/a11y/useKeyWithClickEvents: Escape já fecha o dialog nativo; o clique só trata o fundo escurecido
-  return createPortal(<dialog ref={ref} className="info-dialog" aria-labelledby={`help-${topic}`} onClose={onClose}
-    onClick={(event) => { if (event.target === event.currentTarget) ref.current?.close(); }}>
+  // O portal tira o modal de formulários e fieldsets desabilitados, que bloqueariam o botão de fechar. Fecha pelo botão ou por Escape.
+  return createPortal(<dialog ref={ref} className="info-dialog" aria-labelledby={`help-${topic}`} onClose={onClose}>
     <div className="info-dialog-body">
       <header className="info-dialog-head">
         <div><p className="eyebrow">Entenda</p><h2 id={`help-${topic}`}>{entry.title}</h2></div>
@@ -62,6 +60,9 @@ export function Heading({ eyebrow, title, topic, children }: Readonly<{ eyebrow?
   </div>;
 }
 
+const copyLabels = { idle: 'Copiar', copied: 'Copiado', failed: 'Copie manualmente' } as const;
+const arrowSteps: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1 };
+
 export function CopyButton({ value, label }: Readonly<{ value: string; label: string }>) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   useEffect(() => {
@@ -75,7 +76,7 @@ export function CopyButton({ value, label }: Readonly<{ value: string; label: st
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {state === 'copied' ? <path d="M5 12l5 5 9-10" /> : <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h8" /></>}
     </svg>
-    <span aria-live="polite">{state === 'copied' ? 'Copiado' : state === 'failed' ? 'Copie manualmente' : 'Copiar'}</span>
+    <span aria-live="polite">{copyLabels[state]}</span>
   </button>;
 }
 
@@ -84,8 +85,9 @@ export interface TabItem<T extends string> { id: T; label: string }
 export function Tabs<T extends string>({ items, active, onChange, label }: Readonly<{
   items: readonly TabItem<T>[]; active: T; onChange(id: T): void; label: string;
 }>) {
-  function move(event: KeyboardEvent<HTMLDivElement>) {
-    const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+  // Setas trocam de aba, no padrão WAI-ARIA de tabs com ativação automática.
+  function move(event: KeyboardEvent<HTMLButtonElement>) {
+    const step = arrowSteps[event.key];
     if (!step) return;
     event.preventDefault();
     const index = items.findIndex((item) => item.id === active);
@@ -94,9 +96,9 @@ export function Tabs<T extends string>({ items, active, onChange, label }: Reado
     onChange(next.id);
     document.getElementById(`tab-${next.id}`)?.focus();
   }
-  return <div role="tablist" aria-label={label} className="tabs" onKeyDown={move}>
+  return <div role="tablist" aria-label={label} className="tabs">
     {items.map((item) => <button key={item.id} type="button" role="tab" id={`tab-${item.id}`} aria-controls={`panel-${item.id}`}
-      aria-selected={item.id === active} tabIndex={item.id === active ? 0 : -1} onClick={() => onChange(item.id)}>{item.label}</button>)}
+      aria-selected={item.id === active} tabIndex={item.id === active ? 0 : -1} onClick={() => onChange(item.id)} onKeyDown={move}>{item.label}</button>)}
   </div>;
 }
 

@@ -28,7 +28,8 @@ function Details({ transaction }: Readonly<{ transaction: TransactionView }>) {
     ['Referência vinculada', transaction.referenceTransactionId ?? 'não vinculada'],
     ['Criada em', dateTime(transaction.createdAt)], ['Processada em', dateTime(transaction.processedAt)],
   ];
-  const tone = transaction.status === 'PROCESSED' ? '' : transaction.status === 'PENDING_REFERENCE' ? 'waiting' : 'rejected';
+  const tones: Record<string, string> = { PROCESSED: '', PENDING_REFERENCE: 'waiting', PENDING: 'waiting' };
+  const tone = tones[transaction.status] ?? 'rejected';
   return <div className={`result ${tone}`} aria-live="polite">
     <p className="font-semibold">{statusText[transaction.status] ?? transaction.status} <span className="mono">({transaction.status})</span></p>
     {transaction.failureCode && <p>{failureMessage(transaction.failureCode)} <span className="mono">({transaction.failureCode})</span></p>}
