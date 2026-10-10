@@ -2,7 +2,7 @@
 
 ## Escopo e evidência
 
-Código e testes estão escritos, sem execução comprovada. O runtime proposto é Bun 1.4.2, com NestJS 11.2.5, MikroORM 6.6.0, TypeScript 5.9.3 e PostgreSQL 17.6. As versões foram identificadas em fontes oficiais/registro; a combinação precisa passar pela primeira instalação e suíte real. O lockfile ainda depende dessa instalação.
+Código e testes estão escritos, sem execução comprovada. O runtime proposto é Bun 1.4.2, com NestJS 11.2.6, MikroORM 6.6.16, TypeScript 5.9.3 e PostgreSQL 17.6. As versões foram identificadas em fontes oficiais/registro; a combinação precisa passar pela primeira instalação e suíte real. O lockfile ainda depende dessa instalação.
 
 ## Dinheiro, domínio e persistência
 
@@ -55,7 +55,7 @@ Não há migrations automáticas. `db:status` consulta catálogo/tabela existent
 ## Fontes verificadas
 
 - [MikroORM 6.6: transações](https://mikro-orm.io/docs/6.6/transactions) e [EntitySchema](https://mikro-orm.io/docs/6.6/defining-entities).
-- [MikroORM 6.6: migrations](https://mikro-orm.io/docs/6.6/migrations) e [implementação do migrator](https://github.com/mikro-orm/mikro-orm/blob/v6.6.0/packages/migrations/src/Migrator.ts).
-- [Bun 1.4.2](https://bun.com/blog/bun-v1.4.2), [NestJS 11.2.5](https://github.com/nestjs/nest/releases/tag/v11.2.5) e [PostgreSQL 17.6](https://www.postgresql.org/docs/17/release-17-6.html).
+- [MikroORM 6.6: migrations](https://mikro-orm.io/docs/6.6/migrations) e [implementação do migrator](https://github.com/mikro-orm/mikro-orm/blob/v6.6.16/packages/migrations/src/Migrator.ts).
+- [Bun 1.4.2](https://bun.com/blog/bun-v1.4.2), [NestJS 11.2.6](https://github.com/nestjs/nest/releases/tag/v11.2.6) e [PostgreSQL 17.6](https://www.postgresql.org/docs/17/release-17-6.html).
 
 O case completo ainda exige as demais operações, mensageria, recuperação, gates e evidências. A documentação final também deverá conciliar o nome público de arquitetura exigido pelo enunciado com a regra local que mantém `ARCHITECTURE.md` privado.
