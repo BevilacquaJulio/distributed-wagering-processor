@@ -111,7 +111,7 @@ const messages: Record<string, string> = {
   REFERENCE_NOT_PROCESSED: 'A operação referenciada foi rejeitada ou falhou.',
   REFERENCE_MISMATCH: 'A referência não é compatível: confira tipo, jogador, wallet, moeda e rodada.',
   REFERENCE_AMOUNT_MISMATCH: 'O valor da reversão precisa ser igual ao da operação referenciada.',
-  REFERENCE_ALREADY_REVERSED: 'Esta operação já foi revertida por uma operação do mesmo tipo.',
+  REFERENCE_ALREADY_REVERSED: 'Esta operação já foi revertida (por REFUND ou ROLLBACK) e não aceita outra reversão.',
   REFERENCE_EXPIRED: 'A operação referenciada não chegou dentro do prazo.',
   IDEMPOTENCY_CONFLICT: 'Esta chave já foi usada com outros dados. Confira a operação ou gere uma nova identidade.',
   EXTERNAL_ID_CONFLICT: 'Este ID externo já está associado a outra chave.', WALLET_NOT_FOUND: 'Wallet não encontrada.',

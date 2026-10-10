@@ -171,7 +171,7 @@ export class WageringService {
       const referenceId = transaction.referenceToResolve();
       const reference = referenceId ? await session.findReference(command.providerId, referenceId) : undefined;
       const alreadyReversed = reference && transaction.isReversal()
-        ? await session.hasProcessedReversal(reference.id, command.kind) : false;
+        ? await session.hasProcessedReversal(reference.id) : false;
       const decision = transaction.evaluateReference(reference, alreadyReversed);
       if (decision.outcome === 'pending') {
         if (transaction.status === 'PENDING') transaction.markPendingReference();

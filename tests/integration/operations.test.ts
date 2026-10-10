@@ -84,18 +84,25 @@ describe('WIN e LOSS', () => {
 });
 
 describe('REFUND e ROLLBACK', () => {
-  test('REFUND credita a BET uma única vez; ROLLBACK da mesma BET é outro tipo (limitação D05)', async () => {
+  test('uma BET é revertida uma única vez, por REFUND ou por ROLLBACK, sem crédito em dobro', async () => {
     const wallet = await openWallet(base);
     const bet = await processedBet(wallet, '25.00');
     expect((await submit(reverse(wallet, 'REFUND', '25.00', bet))).body).toMatchObject({ status: 'PROCESSED', balance: { amount: '100.00' } });
     await expectRejected(await submit(reverse(wallet, 'REFUND', '25.00', bet)), 'REFERENCE_ALREADY_REVERSED', '100.00');
-    expect((await submit(reverse(wallet, 'ROLLBACK', '25.00', bet))).body).toMatchObject({ status: 'PROCESSED', balance: { amount: '125.00' } });
-    await expectWallet(wallet.id, '125.00', 4);
+    await expectRejected(await submit(reverse(wallet, 'ROLLBACK', '25.00', bet)), 'REFERENCE_ALREADY_REVERSED', '100.00');
+    await expectWallet(wallet.id, '100.00', 3);
     expect(await financialState(orm, wallet.id)).toEqual({
-      ledger: { CREDIT: 3, DEBIT: 1 },
-      transactions: { 'OPENING:PROCESSED': 1, 'BET:PROCESSED': 1, 'REFUND:PROCESSED': 1, 'REFUND:REJECTED': 1, 'ROLLBACK:PROCESSED': 1 },
-      events: { WagerTransactionProcessed: 4, WalletBalanceChanged: 4, WagerTransactionRejected: 1 },
+      ledger: { CREDIT: 2, DEBIT: 1 },
+      transactions: { 'OPENING:PROCESSED': 1, 'BET:PROCESSED': 1, 'REFUND:PROCESSED': 1, 'REFUND:REJECTED': 1, 'ROLLBACK:REJECTED': 1 },
+      events: { WagerTransactionProcessed: 3, WalletBalanceChanged: 3, WagerTransactionRejected: 2 },
     });
+
+    // Ordem inversa: o ROLLBACK da BET também esgota a reversão e o REFUND posterior é rejeitado.
+    const other = await openWallet(base);
+    const otherBet = await processedBet(other, '40.00');
+    expect((await submit(reverse(other, 'ROLLBACK', '40.00', otherBet))).body).toMatchObject({ status: 'PROCESSED', balance: { amount: '100.00' } });
+    await expectRejected(await submit(reverse(other, 'REFUND', '40.00', otherBet)), 'REFERENCE_ALREADY_REVERSED', '100.00');
+    await expectWallet(other.id, '100.00', 3);
   });
 
   test('ROLLBACK debita WIN e REFUND; sem saldo usa código de reversão', async () => {
@@ -199,8 +206,11 @@ describe('contrato e schema', () => {
       ['delete from pending_references', []],
       ["update wager_transactions set status = 'PENDING' where id = ?", [pending.body.transactionId]],
     ] as const) await expect(connection.execute(sql, [...params])).rejects.toThrow();
-    const index = await connection.execute<{ unique: boolean }[]>(`
-      select indisunique as unique from pg_index where indexrelid = 'wager_references_single_reversal'::regclass`);
-    expect(index).toEqual([{ unique: true }]);
+    // Uma reversão por referência, qualquer que seja o tipo: o índice não inclui kind.
+    const index = await connection.execute<{ unique: boolean; definition: string }[]>(`
+      select indisunique as unique, pg_get_indexdef(indexrelid) as definition from pg_index
+      where indexrelid = 'wager_references_single_reversal'::regclass`);
+    expect(index[0]?.unique).toBe(true);
+    expect(index[0]?.definition).toContain('(reference_transaction_id) WHERE');
   });
 });

@@ -108,9 +108,9 @@ export class PostgresFinancialSession implements FinancialSession {
     return row ? transactionFromRow(row) : undefined;
   }
 
-  async hasProcessedReversal(referenceTransactionId: string, kind: SubmittedKind): Promise<boolean> {
+  async hasProcessedReversal(referenceTransactionId: string): Promise<boolean> {
     const rows = await this.em.execute<{ found: number }[]>(
-      'select 1 as found from wager_references where reference_transaction_id = ? and kind = ?', [referenceTransactionId, kind]);
+      "select 1 as found from wager_references where reference_transaction_id = ? and kind in ('REFUND', 'ROLLBACK')", [referenceTransactionId]);
     return rows.length > 0;
   }
 
